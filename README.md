@@ -2,22 +2,14 @@
 
 A Windows screensaver that shows today's Claude Code spend while Clawd mines for it.
 
-```
-                    $33.47
-
-        ▄▄▄▄▄▄▄▄▄                    ██████
-       ██ ▓▓▓▓▓ ██          ╱        ██▒▒▒██
-      ▄▄▄▄▄▄▄▄▄▄▄▄▄        ╱         ██▒▒███
-      ██  ▮   ▮  ██   ────╯          ███████
-      ██         ██▄▄               ██▒▒▒███
-        ██  ██ ██                    ██████
-```
+![Clawd swings a pickaxe into an ore block while today's spend is shown above him](docs/demo.gif)
 
 | Path | What it is |
 |---|---|
 | `saver/` | The screensaver: a Rust binary that embeds the page and reads ccusage. |
 | `saver/src/ui.html` | The whole visual. Open it in any browser — with no host to feed it, the counter just reads `$--.--`. |
 | `checks/` | Non-visual verification for `ui.html`. |
+| `docs/` | Design and build notes, plus the recording above. |
 
 ## Install
 
