@@ -172,7 +172,12 @@
   }
   function amountColor(now) {
     if (now < celebrateUntil) return GEM_L;   // brief flash when spend goes up
-    return usage && usage.state === 'ok' ? AMOUNT : AMOUNT_D;
+    if (!usage) return AMOUNT_D;
+    if (usage.state === 'ok') return AMOUNT;
+    // A refresh running over a figure we already have should not dim it every
+    // ten seconds — that number is still the current one.
+    if (usage.state === 'loading' && typeof usage.cost === 'number') return AMOUNT;
+    return AMOUNT_D;
   }
 
   // ── Animation state ──────────────────────────────────────
@@ -222,17 +227,21 @@
   // ── Drawing ──────────────────────────────────────────────
   function drawText(text, x, y, scale, fill) {
     let cx = x;
-    for (const ch of text) {
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
       const rows = FONT[ch];
       if (!rows) { cx += 4 * scale; continue; }
       const w = rows[0].length;
       // Glyphs taller than the five-row digit body hang evenly above and below
       // it, so the dollar sign's stem overshoots the way a real one does.
       const dy = (5 - rows.length) / 2 * scale;
+      // `fill` may be a function so a single glyph can be picked out — used to
+      // run a light along the dashes while a fetch is in flight.
+      const paint = typeof fill === 'function' ? fill(i, ch) : fill;
       for (let r = 0; r < rows.length; r++) {
         for (let c = 0; c < w; c++) {
           if (rows[r][c] === '1') {
-            rect(cx + c * scale, y + dy + r * scale, scale, scale, fill);
+            rect(cx + c * scale, y + dy + r * scale, scale, scale, paint);
           }
         }
       }
@@ -250,10 +259,23 @@
     const scale = 3;
     const width = textWidth(text, scale);
     const x = Math.floor((W - width) / 2);
-    drawText(text, x, 6, scale, amountColor(now));
+    const state = usage ? usage.state : 'error';
+
+    // With no figure to show yet, a static "$--.--" is indistinguishable from a
+    // permanent failure — and on the first launch of a new day the cache is
+    // date-stale, so that is exactly what every morning looked like. Run a light
+    // along the dashes instead, so the wait reads as work in progress.
+    if (state === 'loading' && text.indexOf('-') !== -1) {
+      const dashAt = [];
+      for (let i = 0; i < text.length; i++) if (text[i] === '-') dashAt.push(i);
+      const lit = dashAt[Math.floor(now / 200) % dashAt.length];
+      drawText(text, x, 6, scale, i => (i === lit ? AMOUNT : AMOUNT_D));
+    } else {
+      drawText(text, x, 6, scale, amountColor(now));
+    }
 
     // A dim marker when the figure on screen is not from a fresh ccusage run.
-    if (usage && usage.state !== 'ok') rect(x + width + 3, 6, 2, 2, AMOUNT_D);
+    if (state !== 'ok' && state !== 'loading') rect(x + width + 3, 6, 2, 2, AMOUNT_D);
   }
 
   function drawRock(now) {

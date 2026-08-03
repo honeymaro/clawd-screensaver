@@ -188,9 +188,10 @@ self-contained file with no external assets.
    added alongside the digits. Wider amounts grow outward from the centre.
 
 2. **States**
-   - loading, no cache: `$--.--`
+   - loading with nothing cached: `$--.--` with a light running along the dashes
+   - loading over a figure already on screen: unchanged, no dimming
    - stale: the cached figure, dimmed, with a small marker beside it
-   - failed with no cache: `$--.--`
+   - failed with nothing cached: `$--.--`, static
 
 3. **Spend increase.** If a poll returns more than the last one, the ore shatters
    immediately instead of waiting for the swing cycle. While the user is idle this
@@ -357,6 +358,25 @@ running on the dedicated screensaver desktop.
    disrupting the user's actual work, so checks moved to `checks/verify-ui.js`
    (rect alignment and bounds across every pose and drift offset) and
    `checks/smoke-ui.js` (eight usage states executed against a stubbed DOM).
+
+### Found in use, 2026-08-04
+
+The first launch on a new day showed `$--.--` and looked broken. It was not: the
+cache is keyed by date, so a new day starts with no figure, and the fetch takes
+3.5–5 seconds to fill it in. The defect was that `$--.--` was rendered
+identically whether a fetch was in flight or had failed, with nothing moving to
+say which — so every morning read as a failure for several seconds.
+
+The poller now announces a run before making it (`Freshness::Loading`) and the
+page runs a light along the dashes while it waits. A refresh over a figure that
+is already on screen leaves it alone rather than dimming it every ten seconds.
+`checks/smoke-ui.js` asserts the highlight actually travels, since a stationary
+one would be the original bug again.
+
+Worth noting for future debugging: two earlier attempts to reproduce this
+concluded the process was crashing. Both were wrong — one was the liveness poll
+sampling before the process had spawned, the other was the screensaver being
+dismissed by ordinary input. Neither was the app.
 
 ### Not verified
 

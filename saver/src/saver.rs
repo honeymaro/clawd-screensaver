@@ -38,14 +38,15 @@ const EXIT_SCRIPT: &str = r#"
   // Windows sometimes emits a phantom mousemove the instant the saver appears.
   // Stay deaf briefly, then require real cursor travel before quitting.
   setTimeout(function () { armed = true; }, 600);
-  function quit() { if (armed && window.ipc) window.ipc.postMessage('exit'); }
+  function quit(why) { if (armed && window.ipc) window.ipc.postMessage('exit:' + why); }
   addEventListener('mousemove', function (e) {
     if (ox === null) { ox = e.screenX; oy = e.screenY; return; }
-    if (Math.abs(e.screenX - ox) > 8 || Math.abs(e.screenY - oy) > 8) quit();
+    var dx = Math.abs(e.screenX - ox), dy = Math.abs(e.screenY - oy);
+    if (dx > 8 || dy > 8) quit('mousemove d=' + dx + ',' + dy);
   }, true);
-  addEventListener('mousedown', quit, true);
-  addEventListener('wheel', quit, true);
-  addEventListener('keydown', quit, true);
+  addEventListener('mousedown', function () { quit('mousedown'); }, true);
+  addEventListener('wheel', function () { quit('wheel'); }, true);
+  addEventListener('keydown', function (e) { quit('keydown ' + e.key); }, true);
   addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
 })();
 "#;
@@ -188,7 +189,7 @@ fn build_surface(
         .with_initialization_script(init)
         .with_ipc_handler(move |req: Request<String>| {
             let body = req.body().as_str();
-            if body == "exit" {
+            if body.starts_with("exit") {
                 let _ = quit_proxy.send_event(UserEvent::Quit("input from page"));
             } else if let Some(payload) = body.strip_prefix("diag:") {
                 eprintln!("[saver] diag {payload}");

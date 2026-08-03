@@ -12,11 +12,12 @@ const js = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'
 function makeSandbox(staticMode, seed) {
   let rafCb = null;
   const draws = [];
+  let fill = null;
   const ctx = {
-    set fillStyle(v) { this._f = v; },
-    get fillStyle() { return this._f; },
-    fillRect: (x, y, w, h) => draws.push([x, y, w, h]),
-    clearRect: () => {},
+    set fillStyle(v) { fill = v; },
+    get fillStyle() { return fill; },
+    fillRect(x, y, w, h) { draws.push([x, y, w, h, fill]); },
+    clearRect() {},
     imageSmoothingEnabled: true,
   };
   const canvas = { width: 0, height: 0, style: {}, getContext: () => ctx };
@@ -53,7 +54,7 @@ function run(label, staticMode, seed, script) {
     vm.runInContext(js, s.win, { filename: 'ui.html' });
     script(s);
     const rects = s.draws.length;
-    const bad = s.draws.filter(r => r.some(v => !Number.isFinite(v)));
+    const bad = s.draws.filter(r => r.slice(0, 4).some(v => !Number.isFinite(v)));
     if (bad.length) throw new Error(`${bad.length} rect(s) with non-finite coords, e.g. ${bad[0]}`);
     console.log(`  PASS  ${label.padEnd(42)} ${rects} rects drawn`);
     return true;
@@ -84,6 +85,37 @@ ok &= run('spend increases -> celebration', false, { cost: 10, state: 'ok' }, s 
   s.tick(200);
   s.win.CLAWD_USAGE({ cost: 42.5, state: 'ok' });
   for (let i = 0; i < 20; i++) s.tick(140);
+});
+
+// The whole point of the loading state is that it visibly moves. A static
+// "$--.--" is what made the first launch of each day look broken, so assert the
+// highlight actually travels rather than just that the frames render.
+ok &= run('new day: loading light must travel', false, null, s => {
+  const AMOUNT = '#F0EEE6';
+  s.tick(200);
+  s.win.CLAWD_USAGE({ cost: null, state: 'loading' });
+
+  const positions = new Set();
+  for (let i = 0; i < 30; i++) {
+    const before = s.draws.length;
+    s.tick(140);
+    const bright = s.draws.slice(before).filter(r => r[4] === AMOUNT).map(r => r[0]);
+    if (bright.length) positions.add(Math.min(...bright));
+  }
+  if (positions.size < 2) {
+    throw new Error(`loading highlight never moved (${positions.size} position(s): ${[...positions]})`);
+  }
+
+  s.win.CLAWD_USAGE({ cost: 72.99, state: 'ok' });
+  for (let i = 0; i < 8; i++) s.tick(140);
+});
+
+ok &= run('refresh over an existing figure', false, { cost: 33.47, state: 'ok' }, s => {
+  s.tick(200);
+  s.win.CLAWD_USAGE({ cost: 33.47, state: 'loading' });
+  for (let i = 0; i < 8; i++) s.tick(140);
+  s.win.CLAWD_USAGE({ cost: 33.47, state: 'ok' });
+  for (let i = 0; i < 8; i++) s.tick(140);
 });
 
 ok &= run('fetch fails after success (null cost)', false, { cost: 10, state: 'ok' }, s => {

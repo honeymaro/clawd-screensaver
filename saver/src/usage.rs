@@ -22,6 +22,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub enum Freshness {
     /// Straight from a successful ccusage run.
     Fresh,
+    /// A run is in flight. Distinct from Failed so the page can show that
+    /// something is happening — the two looked identical before, which made the
+    /// first launch of each day read as broken for several seconds.
+    Loading,
     /// ccusage failed but a previous value was on disk.
     Stale,
     /// ccusage failed and there is nothing cached.
@@ -38,6 +42,7 @@ impl Usage {
     pub fn to_json(self) -> String {
         let state = match self.freshness {
             Freshness::Fresh => "ok",
+            Freshness::Loading => "loading",
             Freshness::Stale => "stale",
             Freshness::Failed => "error",
         };
@@ -198,6 +203,16 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
     std::thread::spawn(move || {
         loop {
             let started = std::time::Instant::now();
+
+            // Announce the run before making it. A fetch takes several seconds,
+            // and on the first launch of a new day there is no cached figure to
+            // show meanwhile, so the page needs to know the blank is temporary.
+            let mut pending = initial();
+            pending.freshness = Freshness::Loading;
+            if proxy.send_event(UserEvent::Usage(pending)).is_err() {
+                return;
+            }
+
             let usage = match fetch() {
                 Ok(cost) => {
                     write_cache(cost);
