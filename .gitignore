@@ -1,0 +1,17 @@
+# Rust build artifacts — 1.2 GB and fully reproducible from Cargo.lock.
+# Cargo.lock itself IS committed: this is an application, not a library.
+/saver/target/
+
+# Windows shell cruft
+Thumbs.db
+Desktop.ini
+*.lnk
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS, for when this grows a second platform
+.DS_Store

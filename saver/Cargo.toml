@@ -1,0 +1,22 @@
+[package]
+name = "saver"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "clawd-saver"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0.151"
+tao = "0.36.0"
+wry = "0.56.0"
+
+# The whole point of picking wry over Tauri (let alone Electron) was a small
+# self-contained binary, so the release profile is tuned for size.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
