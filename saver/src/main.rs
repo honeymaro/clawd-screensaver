@@ -7,7 +7,6 @@ mod usage;
 
 /// How Windows invoked us. The screensaver contract is a small set of switches
 /// passed on the command line.
-#[derive(Debug, PartialEq)]
 pub enum Mode {
     /// `/s` — run full screen. The real thing.
     Run,

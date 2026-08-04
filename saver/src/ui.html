@@ -107,7 +107,6 @@
     '$': ['010', '111', '110', '111', '011', '111', '010'],
     '.': ['0', '0', '0', '0', '1'],
     '-': ['000', '000', '111', '000', '000'],
-    '?': ['111', '001', '011', '000', '010'],
   };
 
   // ── Renderer ─────────────────────────────────────────────
@@ -390,10 +389,6 @@
   addEventListener('resize', () => { resize(); if (STATIC) draw(performance.now()); });
   resize();
   requestAnimationFrame(frame);
-
-  // Kept only so the celebration branch is reachable from a console during
-  // development; the host never calls it.
-  window.CLAWD_CELEBRATE = () => { celebrateUntil = performance.now() + 1400; shatter(performance.now()); };
 })();
 </script>
 </body>

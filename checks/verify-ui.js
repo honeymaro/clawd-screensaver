@@ -1,6 +1,50 @@
 // Geometry check for saver/src/ui.html: every rect must land on whole device
 // pixels and stay inside the stage, for every pose, every drift offset and the
 // widest amount string we expect to render.
+//
+// The geometry below is re-derived here rather than read from the page on
+// purpose — an independent second implementation is what catches arithmetic the
+// page would happily render wrong. What must not drift is the *data* the two
+// copies start from, so assertMirrorsUi() reads those values back out of
+// ui.html and refuses to run if they have changed on one side only.
+const fs = require('fs');
+const path = require('path');
+const UI = fs.readFileSync(path.join(__dirname, '..', 'saver', 'src', 'ui.html'), 'utf8');
+
+/// Pulls a balanced `{...}` or `[...]` literal out of the page source.
+function literalFromUi(name, open, close) {
+  const decl = UI.indexOf(`const ${name} = ${open}`);
+  if (decl < 0) throw new Error(`ui.html no longer declares "const ${name} = ${open}"`);
+  let depth = 0, i = UI.indexOf(open, decl), start = i;
+  for (; i < UI.length; i++) {
+    if (UI[i] === open) depth++;
+    else if (UI[i] === close && --depth === 0) break;
+  }
+  return Function(`return ${UI.slice(start, i + 1)}`)();
+}
+
+function assertMirrorsUi(font, poses) {
+  // Exact source lines, so a changed constant fails loudly instead of leaving
+  // this file validating a layout the page no longer uses.
+  for (const line of [
+    'const W = 112, H = 74;',
+    'const DX = 13, DY = 19;',
+    'const OX = 4 + DX, OY = -1 + DY;',
+    'const BASE = 47 + DY;',
+    'const RX = 64 + DX, RY = 29 + DY, CELL = 3;',
+  ]) {
+    if (!UI.includes(line)) {
+      throw new Error(`ui.html changed: "${line}" is gone — update verify-ui.js to match`);
+    }
+  }
+  for (const [name, mine] of [['FONT', font], ['POSES', poses]]) {
+    const theirs = literalFromUi(name, name === 'FONT' ? '{' : '[', name === 'FONT' ? '}' : ']');
+    if (JSON.stringify(theirs) !== JSON.stringify(mine)) {
+      throw new Error(`${name} differs between ui.html and verify-ui.js:\n  ui.html: ${JSON.stringify(theirs)}\n  here:    ${JSON.stringify(mine)}`);
+    }
+  }
+}
+
 const W = 112, H = 74, DX = 13, DY = 19;
 const OX = 4 + DX, OY = -1 + DY, BASE = 47 + DY;
 const RX = 64 + DX, RY = 29 + DY;
@@ -19,8 +63,10 @@ const FONT = {
   '6': ['111','100','111','101','111'], '7': ['111','001','001','001','001'],
   '8': ['111','101','111','101','111'], '9': ['111','101','111','001','111'],
   '$': ['010','111','110','111','011','111','010'], '.': ['0','0','0','0','1'],
-  '-': ['000','000','111','000','000'], '?': ['111','001','011','000','010'],
+  '-': ['000','000','111','000','000'],
 };
+
+assertMirrorsUi(FONT, POSES);
 
 const problems = [];
 let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;

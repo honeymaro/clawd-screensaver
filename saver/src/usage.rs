@@ -18,7 +18,7 @@ const CCUSAGE: &str = "ccusage@20.0.19";
 /// Stops a console window from flashing onto the screensaver when we shell out.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum Freshness {
     /// Straight from a successful ccusage run.
     Fresh,
@@ -32,7 +32,7 @@ pub enum Freshness {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Usage {
     pub cost: Option<f64>,
     pub freshness: Freshness,
@@ -77,14 +77,23 @@ fn today() -> String {
     format!("{:04}{:02}{:02}", st.year, st.month, st.day)
 }
 
-/// Runners are tried in order. `pnpx` and `npx` are `.CMD` batch files, so they
-/// have to go through `cmd /C` rather than being executed directly.
+/// Runners are tried in order.
 ///
-/// Measured on this machine: `pnpx` spends ~4.6s on package resolution and node
-/// startup before ccusage does any work, and ccusage's own scan adds ~3.5s on
-/// top. A globally installed `ccusage` skips the first half entirely, so it is
-/// tried first; when it is absent `cmd` fails within milliseconds and the chain
-/// moves on.
+/// Everything goes through `cmd /C` because `Command::new("pnpx")` fails with
+/// "program not found" — CreateProcess appends `.exe` and does not search
+/// PATHEXT, so it never finds `pnpx.CMD`. Naming the extension explicitly would
+/// work for the npm shims, but `cmd` is what lets a globally installed
+/// `ccusage` resolve to whatever extension its installer happened to use.
+///
+/// The tradeoff: routing through `cmd` skips the batch-argument escaping the
+/// standard library applies when it resolves a `.CMD` itself. Safe only because
+/// every argument below is a fixed string or a digits-only date. Do not pass
+/// anything here that originates outside this program.
+///
+/// A globally installed `ccusage` also skips pnpx's package resolution, which
+/// is most of the wait, so it is tried first; when absent `cmd` fails within
+/// milliseconds and the chain moves on. Measured end-to-end cost varies with
+/// machine load — roughly 2s idle, up to 9s under a heavy build.
 fn runners() -> Vec<(String, Vec<String>)> {
     let mut list: Vec<(String, Vec<String>)> = vec![
         ("ccusage".into(), vec![]),
