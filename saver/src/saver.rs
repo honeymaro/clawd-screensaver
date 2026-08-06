@@ -14,10 +14,14 @@ use crate::{Opts, usage};
 
 const UI: &str = include_str!("ui.html");
 
-/// A fetch takes 7-9s on its own, so this is close to the floor: the poller
-/// subtracts the fetch time from the wait, which means node is running most of
-/// the time the saver is up. Worth it only because it makes a long-running
-/// background agent's spend visibly tick upward.
+/// The bundled ccusage answers in about a second from a shell, but the saver's
+/// own log has recorded the same call taking up to 6.8s while the page is
+/// animating. The PATH-resolved fallbacks are far worse: 25s and 94s have both
+/// been logged in a live session. So this is the real cadence only when the fast
+/// path is available and a lower bound otherwise — the poller subtracts the
+/// fetch from the wait and keeps a floor under it. Polling this often is worth
+/// it because it makes a long-running background agent's spend visibly tick
+/// upward.
 pub const REFRESH: Duration = Duration::from_secs(10);
 
 /// Messages pushed onto the event loop from outside it. The quit reason is

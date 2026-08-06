@@ -76,19 +76,47 @@ function Apply-Settings {
     }
 }
 
+# The pinned package is read out of the Rust source rather than repeated here.
+# The runner chain falls back to `pnpx ccusage@<version>`, and a mismatch would
+# quietly mean two different ccusages depending on which runner won.
+function Get-PinnedCcusage {
+    $usageRs = Join-Path $PSScriptRoot 'saver\src\usage.rs'
+    $m = [regex]::Match((Get-Content $usageRs -Raw),
+                        'const CCUSAGE: &str = "(?<spec>ccusage@(?<version>[^"]+))"')
+    if (-not $m.Success) {
+        throw "could not read the pinned ccusage version out of $usageRs"
+    }
+    [pscustomobject]@{ Spec = $m.Groups['spec'].Value; Version = $m.Groups['version'].Value }
+}
+
+# What is actually sitting in the runtime directory right now, or $null.
+function Get-InstalledCcusage {
+    $manifest = Join-Path $runtimeDir 'node_modules\ccusage\package.json'
+    if (-not (Test-Path $manifest)) { return $null }
+    (Get-Content $manifest -Raw | ConvertFrom-Json).version
+}
+
+# Reading the version out of the source only keeps the two copies in step within
+# a run that actually installs. -SkipRuntime, or a runtime install that failed
+# earlier, can leave an older copy on disk - and since it is the first runner
+# tried, it wins over the pinned fallback on every fetch. So the check runs even
+# when the install does not. A warning, not a failure: an old ccusage still
+# produces a number.
+function Assert-RuntimeVersion {
+    param([string]$Wanted)
+    $have = Get-InstalledCcusage
+    if (-not $have -or $have -eq $Wanted) { return }
+    Write-Warning "The bundled ccusage is $have, but $Wanted is pinned in saver\src\usage.rs."
+    Write-Warning 'It is the first runner tried, so it wins over the pinned fallback.'
+    Write-Warning 'Re-run without -SkipRuntime to replace it.'
+}
+
 # Installs the copy of ccusage the screensaver prefers over every PATH-dependent
 # runner. Never fatal: without it the saver still works, just slower and only
 # when it inherits a PATH with a package runner on it.
 function Install-Runtime {
-    # The version is read out of the Rust source rather than repeated here. The
-    # runner chain falls back to `pnpx ccusage@<version>`, and a mismatch would
-    # quietly mean two different ccusages depending on which runner won.
-    $usageRs = Join-Path $PSScriptRoot 'saver\src\usage.rs'
-    $match = [regex]::Match((Get-Content $usageRs -Raw), 'const CCUSAGE: &str = "(?<pkg>[^"]+)"')
-    if (-not $match.Success) {
-        throw "could not read the pinned ccusage version out of $usageRs"
-    }
-    $pkg = $match.Groups['pkg'].Value
+    $pin = Get-PinnedCcusage
+    $pkg = $pin.Spec
 
     $node = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $node) { throw 'node is not on PATH' }
@@ -135,6 +163,10 @@ function Install-Runtime {
     Write-Host ("  node    {0}" -f $node)
     Write-Host ("  size    {0:N1} MB" -f ($bytes / 1MB))
     Write-Host ("  probe   today = `${0:N2} in {1:N2}s" -f $probe.totals.totalCost, $sw.Elapsed.TotalSeconds)
+
+    # Confirms the package manager installed what was asked for, rather than
+    # resolving to something else and reporting success.
+    Assert-RuntimeVersion -Wanted $pin.Version
 }
 
 if ($Uninstall) {
@@ -180,6 +212,9 @@ if (-not $SkipRuntime) {
         Write-Warning 'The screensaver will fall back to pnpx / npx, which is slower and needs'
         Write-Warning 'a package runner on PATH. Re-run this script to try again.'
     }
+} else {
+    try { Assert-RuntimeVersion -Wanted (Get-PinnedCcusage).Version }
+    catch { Write-Warning "Could not check the bundled ccusage version - $($_.Exception.Message)" }
 }
 
 if ($System) {

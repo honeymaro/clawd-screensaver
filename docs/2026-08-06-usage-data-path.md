@@ -58,6 +58,27 @@ pnpx           fails in 0.08 s
 Cost: 4.1 MB and 19 files in the install directory, and about a second to install
 against a warm pnpm store. The `.scr` grows by 2,560 bytes, to 636,416.
 
+### Both are slower inside a running saver
+
+Everything above was measured from a shell. The saver's own log records what
+happens while the page is animating a canvas on every display:
+
+```
+11:29:01  fetch ok   93.9s  via pnpx
+11:29:31  fetch ok   25.4s  via pnpx
+13:42:32  fetch ok    4.3s  via local
+13:55:20  fetch ok    4.0s  via local
+```
+
+Across twelve logged `local` fetches: 1.0 s minimum, 1.8 s median, 6.8 s maximum.
+
+The cause is not established. Those samples were taken on a machine that was
+also compiling and running node at the time, so saver load and ambient load are
+not separated, and no controlled measurement has been made. What the log does
+establish is that the shell figures are a best case for both runners rather than
+a typical one, and that the ratio between them survives contact with a real
+session. Treat every number in this document as a comparison, not a promise.
+
 ### Why not a global install
 
 A global `ccusage` also skips package resolution, so its wall-clock is comparable.

@@ -137,16 +137,25 @@ fn local_runner() -> Option<Runner> {
     }
     Some(Runner {
         label: "local",
-        program: node_exe(&runtime)?,
+        program: node_exe(&runtime),
         lead: vec![cli.to_string_lossy().into_owned()],
         via_cmd: false,
     })
 }
 
-/// Where node lives, without consulting PATH. The install script records the
-/// absolute path while it still has a full environment; the default installer
-/// location is the fallback for a node that has since been moved or reinstalled.
-fn node_exe(runtime: &Path) -> Option<String> {
+/// Where node lives. The install script records the absolute path while it still
+/// has a full environment, and the default installer location covers a node that
+/// has since been reinstalled.
+///
+/// The last resort is the bare name, letting CreateProcess search PATH. Unlike
+/// the `.CMD` shims that need `cmd`, this works directly, because node really is
+/// `node.exe`. It matters for anyone whose node is managed by nvm, fnm or Volta:
+/// their recorded path goes stale every time they switch versions and
+/// `%ProgramFiles%` never had a node in it, so without this the bundled ccusage
+/// would drop out of the chain permanently and silently. If PATH has no node
+/// either, the spawn fails immediately and the chain moves on, which is exactly
+/// what would have happened anyway.
+fn node_exe(runtime: &Path) -> String {
     let recorded = std::fs::read_to_string(runtime.join("node.txt")).ok();
     let default =
         std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs").join("node.exe"));
@@ -157,7 +166,7 @@ fn node_exe(runtime: &Path) -> Option<String> {
         .into_iter()
         .chain(default)
         .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+        .map_or_else(|| "node".to_string(), |p| p.to_string_lossy().into_owned())
 }
 
 /// Runners are tried in order and the first one that produces a number wins.
@@ -198,6 +207,11 @@ pub fn fetch() -> Result<(f64, String), String> {
     let day = today();
     let started = std::time::Instant::now();
     let mut problems = Vec::new();
+    // Tracked separately from `problems` so a successful fetch can say which
+    // runners it had to step over first. Without it a log line reading "via
+    // npx" cannot distinguish a bundled copy that was never installed from one
+    // that is installed and broken, and only the second is worth reinstalling.
+    let mut stepped_over: Vec<&'static str> = Vec::new();
 
     for runner in runners() {
         let mut cmd = if runner.via_cmd {
@@ -215,8 +229,13 @@ pub fn fetch() -> Result<(f64, String), String> {
         match cmd.output() {
             Ok(out) if out.status.success() => match parse_total(&out.stdout) {
                 Ok(cost) => {
+                    let after = if stepped_over.is_empty() {
+                        String::new()
+                    } else {
+                        format!("   (after {})", stepped_over.join(", "))
+                    };
                     log(&format!(
-                        "fetch ok      {:>6.1}s  via {label}  ${cost:.2}",
+                        "fetch ok      {:>6.1}s  via {label}  ${cost:.2}{after}",
                         started.elapsed().as_secs_f32()
                     ));
                     return Ok((cost, label.to_string()));
@@ -230,6 +249,7 @@ pub fn fetch() -> Result<(f64, String), String> {
             )),
             Err(e) => problems.push(format!("{label}: {e}")),
         }
+        stepped_over.push(label);
     }
 
     let why = problems.join(" | ");
@@ -419,5 +439,96 @@ pub fn print_once() {
             println!("log    = {:?}", log_path());
         }
         Err(e) => println!("FAILED after {:?}\n{e}", started.elapsed()),
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// Only the two functions that turn outside input into a decision. Everything
+// else in this file either shells out or draws on the environment, and is
+// covered by `--print-usage` instead.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_day_with_no_usage_is_zero_not_a_failure() {
+        let json = br#"{"daily":[],"totals":{"totalCost":0}}"#;
+        assert_eq!(parse_total(json), Ok(0.0));
+    }
+
+    #[test]
+    fn the_total_comes_from_totals_not_the_daily_rows() {
+        let json = br#"{"daily":[{"period":"2026-08-06","totalCost":1.0}],
+                        "totals":{"totalCost":137.96}}"#;
+        assert_eq!(parse_total(json), Ok(137.96));
+    }
+
+    #[test]
+    fn a_missing_total_is_an_error_rather_than_a_zero() {
+        // Showing $0.00 for a day that had spend is worse than showing the
+        // previous figure and marking it stale.
+        let json = br#"{"daily":[{"period":"2026-08-06"}],"totals":{}}"#;
+        assert!(parse_total(json).is_err());
+    }
+
+    #[test]
+    fn output_that_is_not_json_is_an_error() {
+        assert!(parse_total(b"ccusage: command not found").is_err());
+    }
+
+    fn temp_runtime(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("clawd-saver-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `node_exe` only checks that the path names a file, so an empty one stands
+    /// in for a node install without needing a real interpreter.
+    fn stub_node(dir: &Path) -> PathBuf {
+        let exe = dir.join("stub-node.exe");
+        std::fs::write(&exe, b"").unwrap();
+        exe
+    }
+
+    #[test]
+    fn a_recorded_path_is_preferred() {
+        let dir = temp_runtime("recorded");
+        let exe = stub_node(&dir);
+        std::fs::write(dir.join("node.txt"), exe.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(node_exe(&dir), exe.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bom_and_trailing_newline_do_not_break_the_recorded_path() {
+        let dir = temp_runtime("bom");
+        let exe = stub_node(&dir);
+        let body = format!("\u{feff}{}\r\n", exe.to_string_lossy());
+        std::fs::write(dir.join("node.txt"), body.as_bytes()).unwrap();
+        assert_eq!(node_exe(&dir), exe.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_recording_never_yields_nothing_to_run() {
+        // A node moved by a version manager must not drop the bundled ccusage
+        // out of the chain: the result is either a real file or the bare name
+        // for CreateProcess to resolve against PATH.
+        let dir = temp_runtime("stale");
+        std::fs::write(dir.join("node.txt"), br"Z:\moved-away\node.exe").unwrap();
+        let resolved = node_exe(&dir);
+        assert!(resolved == "node" || PathBuf::from(&resolved).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_absent_recording_is_not_an_error() {
+        let dir = temp_runtime("absent");
+        let resolved = node_exe(&dir);
+        assert!(!resolved.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

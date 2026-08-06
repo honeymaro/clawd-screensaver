@@ -80,6 +80,10 @@ resolving the package rather than running it, and a screensaver the system
 launches can inherit a PATH with no package runner on it at all — which is what
 "the counter only ever showed `$--.--`" turned out to be.
 
+Those are shell measurements. Inside a running saver both are slower: the log has
+recorded the bundled copy at up to 6.8 s and `pnpx` at up to 94 s. Read the table
+as a ratio, not as timings to expect.
+
 Everything below the bundled copy is a fallback, for an install that predates the
 `runtime\` directory or one where node has since moved. A stale `node.txt` is not
 fatal either: the default installer location is tried before the bundled copy is
