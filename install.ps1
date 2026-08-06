@@ -7,8 +7,13 @@
   points HKCU:\Control Panel\Desktop at it. No administrator rights are needed
   because everything stays under the current user.
 
+  Also installs a pinned copy of ccusage under %LOCALAPPDATA%\clawd-saver\runtime
+  and records the absolute path to node.exe beside it. The screensaver runs that
+  copy directly, which is both faster than resolving the package with pnpx on
+  every refresh and immune to being launched with a PATH that has no node on it.
+
   Caveat: the Windows screensaver dropdown only enumerates .scr files that live
-  in System32, so this one will not appear in that list. It still runs on idle —
+  in System32, so this one will not appear in that list. It still runs on idle -
   Windows reads the path from the registry, not from the dropdown. Use -System
   (from an elevated prompt) if you want it listed.
 
@@ -17,6 +22,9 @@
 
 .PARAMETER SkipBuild
   Register whatever binary is already built instead of rebuilding.
+
+.PARAMETER SkipRuntime
+  Leave the bundled ccusage alone. The screensaver falls back to pnpx / npx.
 
 .PARAMETER System
   Also copy the .scr into System32 so it shows up in the settings dropdown.
@@ -36,6 +44,7 @@
 param(
     [int]$Timeout = 5,
     [switch]$SkipBuild,
+    [switch]$SkipRuntime,
     [switch]$System,
     [switch]$Uninstall
 )
@@ -45,6 +54,7 @@ $ErrorActionPreference = 'Stop'
 $desktopKey = 'HKCU:\Control Panel\Desktop'
 $installDir = Join-Path $env:LOCALAPPDATA 'clawd-saver'
 $installScr = Join-Path $installDir 'clawd-saver.scr'
+$runtimeDir = Join-Path $installDir 'runtime'
 $systemScr  = Join-Path $env:SystemRoot 'System32\clawd-saver.scr'
 
 # Nudges the running session so the change applies without signing out.
@@ -66,18 +76,80 @@ function Apply-Settings {
     }
 }
 
+# Installs the copy of ccusage the screensaver prefers over every PATH-dependent
+# runner. Never fatal: without it the saver still works, just slower and only
+# when it inherits a PATH with a package runner on it.
+function Install-Runtime {
+    # The version is read out of the Rust source rather than repeated here. The
+    # runner chain falls back to `pnpx ccusage@<version>`, and a mismatch would
+    # quietly mean two different ccusages depending on which runner won.
+    $usageRs = Join-Path $PSScriptRoot 'saver\src\usage.rs'
+    $match = [regex]::Match((Get-Content $usageRs -Raw), 'const CCUSAGE: &str = "(?<pkg>[^"]+)"')
+    if (-not $match.Success) {
+        throw "could not read the pinned ccusage version out of $usageRs"
+    }
+    $pkg = $match.Groups['pkg'].Value
+
+    $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+    if (-not $node) { throw 'node is not on PATH' }
+
+    New-Item -ItemType Directory -Force $runtimeDir | Out-Null
+    # A private manifest keeps the package manager from walking up the tree and
+    # attaching this install to some unrelated project.
+    '{"name":"clawd-saver-runtime","version":"0.0.0","private":true}' |
+        Set-Content (Join-Path $runtimeDir 'package.json') -Encoding ascii
+
+    Write-Host "Installing $pkg into $runtimeDir ..."
+    Push-Location $runtimeDir
+    try {
+        if (Get-Command pnpm -ErrorAction SilentlyContinue) {
+            pnpm add $pkg --prefer-offline | Out-Null
+        } elseif (Get-Command npm -ErrorAction SilentlyContinue) {
+            npm install $pkg --silent | Out-Null
+        } else {
+            throw 'neither pnpm nor npm is on PATH'
+        }
+        if ($LASTEXITCODE -ne 0) { throw "the package manager exited with $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+
+    $cli = Join-Path $runtimeDir 'node_modules\ccusage\src\cli.js'
+    if (-not (Test-Path $cli)) { throw "install reported success but $cli is missing" }
+
+    # Recorded now, while PATH still has node on it. Written without a BOM
+    # because the screensaver reads the file as a path and a BOM is not
+    # whitespace, so it would survive trimming and break the lookup.
+    [System.IO.File]::WriteAllText(
+        (Join-Path $runtimeDir 'node.txt'), $node, (New-Object System.Text.UTF8Encoding($false)))
+
+    # Prove the exact command the screensaver will run actually works, and show
+    # what it costs, since the whole point of this step is the wall-clock.
+    $day = Get-Date -Format 'yyyyMMdd'
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $probe = & $node $cli daily --json --since $day --until $day | ConvertFrom-Json
+    $sw.Stop()
+    if ($LASTEXITCODE -ne 0) { throw "the bundled ccusage exited with $LASTEXITCODE" }
+
+    $bytes = (Get-ChildItem $runtimeDir -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+    Write-Host ("  node    {0}" -f $node)
+    Write-Host ("  size    {0:N1} MB" -f ($bytes / 1MB))
+    Write-Host ("  probe   today = `${0:N2} in {1:N2}s" -f $probe.totals.totalCost, $sw.Elapsed.TotalSeconds)
+}
+
 if ($Uninstall) {
     Write-Host 'Removing Clawd Saver...'
     Remove-ItemProperty $desktopKey -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue
     Set-ItemProperty $desktopKey -Name 'ScreenSaveActive' -Value '0'
     Apply-Settings -Seconds 0 -Active $false
-    foreach ($p in @($installScr, $systemScr)) {
+    # The whole directory belongs to us: the binary, the bundled ccusage, the
+    # date-keyed cache and the diagnostic log.
+    foreach ($p in @($installDir, $systemScr)) {
         if (Test-Path $p) {
-            try { Remove-Item $p -Force; Write-Host "  removed $p" }
-            catch { Write-Warning "  could not remove $p — $($_.Exception.Message)" }
+            try { Remove-Item $p -Recurse -Force; Write-Host "  removed $p" }
+            catch { Write-Warning "  could not remove $p - $($_.Exception.Message)" }
         }
     }
-    if ((Test-Path $installDir) -and -not (Get-ChildItem $installDir)) { Remove-Item $installDir -Force }
     Write-Host 'Done. The screensaver is unregistered.'
     return
 }
@@ -85,7 +157,7 @@ if ($Uninstall) {
 $exe = Join-Path $PSScriptRoot 'saver\target\release\clawd-saver.exe'
 
 if (-not $SkipBuild) {
-    Write-Host 'Building release binary (size-optimised, LTO — this takes a few minutes)...'
+    Write-Host 'Building release binary (size-optimised, LTO - this takes a few minutes)...'
     Push-Location (Join-Path $PSScriptRoot 'saver')
     try { cargo build --release } finally { Pop-Location }
 }
@@ -100,12 +172,22 @@ Copy-Item $exe $installScr -Force
 $size = (Get-Item $installScr).Length
 Write-Host ("Installed {0}  ({1:N0} bytes, {2:N2} MB)" -f $installScr, $size, ($size / 1MB))
 
+if (-not $SkipRuntime) {
+    try {
+        Install-Runtime
+    } catch {
+        Write-Warning "Could not install the bundled ccusage - $($_.Exception.Message)"
+        Write-Warning 'The screensaver will fall back to pnpx / npx, which is slower and needs'
+        Write-Warning 'a package runner on PATH. Re-run this script to try again.'
+    }
+}
+
 if ($System) {
     try {
         Copy-Item $exe $systemScr -Force
         Write-Host "Also copied to $systemScr (will appear in the settings dropdown)"
     } catch {
-        Write-Warning "Could not write to System32 — run from an elevated prompt for -System. $($_.Exception.Message)"
+        Write-Warning "Could not write to System32 - run from an elevated prompt for -System. $($_.Exception.Message)"
     }
 }
 

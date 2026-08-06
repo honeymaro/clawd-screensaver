@@ -2,21 +2,24 @@
 
 use std::{
     os::windows::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use tao::event_loop::EventLoopProxy;
 
-use crate::saver::UserEvent;
-
 /// Pinned instead of `@latest`. `@latest` re-resolves against the npm registry
 /// on every single run, which costs a round trip and fails outright offline.
+///
+/// `install.ps1` reads this line to decide what to install into the runtime
+/// directory, so the bundled copy and the pnpx fallback cannot drift apart.
 const CCUSAGE: &str = "ccusage@20.0.19";
 
 /// Stops a console window from flashing onto the screensaver when we shell out.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+use crate::saver::UserEvent;
 
 #[derive(Clone, Copy)]
 pub enum Freshness {
@@ -53,6 +56,11 @@ impl Usage {
     }
 }
 
+/// Everything this program installs, writes or caches lives here.
+fn app_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("clawd-saver"))
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct SystemTimeFields {
@@ -83,72 +91,144 @@ fn today() -> String {
     format!("{:04}{:02}{:02}", st.year, st.month, st.day)
 }
 
-/// Runners are tried in order.
+// ── Runners ──────────────────────────────────────────────────────────────────
+
+/// One way of invoking ccusage.
+struct Runner {
+    /// Short name for the log. The local runner's real command line is two
+    /// absolute paths, which is far too long to read at a glance.
+    label: &'static str,
+    program: String,
+    lead: Vec<String>,
+    /// Whether the program has to be launched through `cmd`.
+    ///
+    /// `Command::new("pnpx")` fails with "program not found" — CreateProcess
+    /// appends `.exe` and does not search PATHEXT, so it never finds
+    /// `pnpx.CMD`. Naming the extension explicitly would work for the npm
+    /// shims, but `cmd` is what lets a globally installed `ccusage` resolve to
+    /// whatever extension its installer happened to use.
+    ///
+    /// The tradeoff: routing through `cmd` skips the batch-argument escaping
+    /// the standard library applies when it resolves a `.CMD` itself. Safe only
+    /// because every argument below is a fixed string, an installer-recorded
+    /// path or a digits-only date. Do not pass anything through here that
+    /// originates outside this program.
+    ///
+    /// The local runner is a real `.exe` at an absolute path, so it needs none
+    /// of that and is launched directly.
+    via_cmd: bool,
+}
+
+/// The copy of ccusage that `install.ps1` puts under the install directory, run
+/// through the `node.exe` recorded beside it.
 ///
-/// Everything goes through `cmd /C` because `Command::new("pnpx")` fails with
-/// "program not found" — CreateProcess appends `.exe` and does not search
-/// PATHEXT, so it never finds `pnpx.CMD`. Naming the extension explicitly would
-/// work for the npm shims, but `cmd` is what lets a globally installed
-/// `ccusage` resolve to whatever extension its installer happened to use.
+/// This is the only runner that consults neither PATH nor a package resolver,
+/// and it is first for both reasons. `pnpx` spends nearly all of its time
+/// resolving the package rather than running it — 1.1s here against 2-13s, and
+/// around 20s on the first run of a day when the dlx cache has to be rebuilt.
+/// And a screensaver the system launches can inherit a PATH with no node, no
+/// pnpm and no npm on it, in which case every runner below fails within
+/// milliseconds and the counter never fills in at all.
+fn local_runner() -> Option<Runner> {
+    let runtime = app_dir()?.join("runtime");
+    let cli = runtime.join("node_modules").join("ccusage").join("src").join("cli.js");
+    if !cli.is_file() {
+        return None;
+    }
+    Some(Runner {
+        label: "local",
+        program: node_exe(&runtime)?,
+        lead: vec![cli.to_string_lossy().into_owned()],
+        via_cmd: false,
+    })
+}
+
+/// Where node lives, without consulting PATH. The install script records the
+/// absolute path while it still has a full environment; the default installer
+/// location is the fallback for a node that has since been moved or reinstalled.
+fn node_exe(runtime: &Path) -> Option<String> {
+    let recorded = std::fs::read_to_string(runtime.join("node.txt")).ok();
+    let default =
+        std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs").join("node.exe"));
+    recorded
+        // A BOM is not whitespace, so trim() alone would leave one glued to the
+        // front of the path and the lookup would fail for no visible reason.
+        .map(|s| PathBuf::from(s.trim_start_matches('\u{feff}').trim()))
+        .into_iter()
+        .chain(default)
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Runners are tried in order and the first one that produces a number wins.
 ///
-/// The tradeoff: routing through `cmd` skips the batch-argument escaping the
-/// standard library applies when it resolves a `.CMD` itself. Safe only because
-/// every argument below is a fixed string or a digits-only date. Do not pass
-/// anything here that originates outside this program.
-///
-/// A globally installed `ccusage` also skips pnpx's package resolution, which
-/// is most of the wait, so it is tried first; when absent `cmd` fails within
-/// milliseconds and the chain moves on. Measured end-to-end cost varies with
-/// machine load — roughly 2s idle, up to 9s under a heavy build.
-fn runners() -> Vec<(String, Vec<String>)> {
-    let mut list: Vec<(String, Vec<String>)> = vec![
-        ("ccusage".into(), vec![]),
-        ("pnpx".into(), vec![CCUSAGE.into()]),
-        ("npx".into(), vec!["-y".into(), CCUSAGE.into()]),
-    ];
+/// Everything after the local copy is a fallback: for an install that predates
+/// the runtime directory, or one where node has since moved. A globally
+/// installed `ccusage` also skips pnpx's package resolution, so it is preferred
+/// over pnpx; when absent `cmd` fails within milliseconds and the chain moves
+/// on.
+fn runners() -> Vec<Runner> {
+    let shell = |label: &'static str, program: &str, lead: Vec<String>| Runner {
+        label,
+        program: program.to_string(),
+        lead,
+        via_cmd: true,
+    };
+
+    let mut list: Vec<Runner> = local_runner().into_iter().collect();
+    list.push(shell("ccusage", "ccusage", vec![]));
+    list.push(shell("pnpx", "pnpx", vec![CCUSAGE.into()]));
+    list.push(shell("npx", "npx", vec!["-y".into(), CCUSAGE.into()]));
+
     // A screensaver can be launched by the system with a thinner PATH than an
     // interactive shell, so fall back to where pnpm installs itself.
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let direct = PathBuf::from(local).join("pnpm").join("pnpx.CMD");
-        if direct.exists() {
-            list.push((direct.to_string_lossy().into_owned(), vec![CCUSAGE.into()]));
+        if direct.is_file() {
+            list.push(shell("pnpx.CMD", &direct.to_string_lossy(), vec![CCUSAGE.into()]));
         }
     }
     list
 }
 
-/// On success, also reports which runner won — the difference between a
-/// globally installed `ccusage` and the pnpx fallback is an order of magnitude
-/// in wall-clock, so the log is close to useless without it.
+/// On success, also reports which runner won — the difference between the local
+/// copy and the pnpx fallback is an order of magnitude in wall-clock, so the log
+/// is close to useless without it.
 pub fn fetch() -> Result<(f64, String), String> {
     let day = today();
     let started = std::time::Instant::now();
     let mut problems = Vec::new();
 
-    for (program, lead) in runners() {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(&program).args(&lead).args([
-            "daily", "--json", "--since", &day, "--until", &day,
-        ]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
+    for runner in runners() {
+        let mut cmd = if runner.via_cmd {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(&runner.program);
+            c
+        } else {
+            Command::new(&runner.program)
+        };
+        cmd.args(&runner.lead)
+            .args(["daily", "--json", "--since", &day, "--until", &day])
+            .creation_flags(CREATE_NO_WINDOW);
 
+        let label = runner.label;
         match cmd.output() {
             Ok(out) if out.status.success() => match parse_total(&out.stdout) {
                 Ok(cost) => {
                     log(&format!(
-                        "fetch ok      {:>6.1}s  via {program}  ${cost:.2}",
+                        "fetch ok      {:>6.1}s  via {label}  ${cost:.2}",
                         started.elapsed().as_secs_f32()
                     ));
-                    return Ok((cost, program));
+                    return Ok((cost, label.to_string()));
                 }
-                Err(e) => problems.push(format!("{program}: {e}")),
+                Err(e) => problems.push(format!("{label}: {e}")),
             },
             Ok(out) => problems.push(format!(
-                "{program}: {} - {}",
+                "{label}: {} - {}",
                 out.status,
                 String::from_utf8_lossy(&out.stderr).trim().replace('\n', " ")
             )),
-            Err(e) => problems.push(format!("{program}: {e}")),
+            Err(e) => problems.push(format!("{label}: {e}")),
         }
     }
 
@@ -193,7 +273,7 @@ const LOG_MAX_BYTES: u64 = 64 * 1024;
 const LOG_KEEP_LINES: usize = 300;
 
 fn log_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("clawd-saver").join("log.txt"))
+    app_dir().map(|d| d.join("log.txt"))
 }
 
 pub fn log(msg: &str) {
@@ -224,8 +304,7 @@ pub fn log(msg: &str) {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("clawd-saver").join("last.json"))
+    app_dir().map(|d| d.join("last.json"))
 }
 
 /// The cached value is only meaningful for the day it was written; spend resets
@@ -255,8 +334,8 @@ fn write_cache(cost: f64) {
     let _ = std::fs::write(path, body);
 }
 
-/// What to show before the first ccusage run finishes. A ccusage run takes
-/// roughly two seconds, and staring at a blank counter for that long is worse
+/// What to show before the first ccusage run finishes. Even the local runner
+/// takes about a second, and staring at a blank counter for that long is worse
 /// than showing the last figure recorded today.
 pub fn initial() -> Usage {
     match read_cache() {
@@ -286,9 +365,10 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
         loop {
             let started = std::time::Instant::now();
 
-            // Announce the run before making it. A fetch takes several seconds,
-            // and on the first launch of a new day there is no cached figure to
-            // show meanwhile, so the page needs to know the blank is temporary.
+            // Announce the run before making it. A fetch can take several
+            // seconds, and on the first launch of a new day there is no cached
+            // figure to show meanwhile, so the page needs to know the blank is
+            // temporary.
             let mut pending = initial();
             pending.freshness = Freshness::Loading;
             if proxy.send_event(UserEvent::Usage(pending)).is_err() {
@@ -322,6 +402,10 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
 /// window.
 pub fn print_once() {
     let started = std::time::Instant::now();
+    println!(
+        "runners = {:?}",
+        runners().iter().map(|r| r.label).collect::<Vec<_>>()
+    );
     match fetch() {
         Ok((cost, runner)) => {
             write_cache(cost);

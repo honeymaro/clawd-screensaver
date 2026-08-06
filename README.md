@@ -22,6 +22,11 @@ A Windows screensaver that shows today's Claude Code spend while Clawd mines for
 Everything lands under `%LOCALAPPDATA%\clawd-saver\` and `HKCU:\Control Panel\Desktop`.
 No administrator rights required.
 
+The install also drops a pinned copy of ccusage into `runtime\` beside the
+binary, with pnpm or npm — whichever is on PATH. It needs node and about 4 MB.
+That step is not allowed to fail the install: if it does, the saver falls back to
+`pnpx` and says so in the log. Pass `-SkipRuntime` to skip it deliberately.
+
 The Windows screensaver dropdown only lists `.scr` files that live in `System32`,
 so this one will not appear there. It still runs on idle — Windows reads the path
 from the registry, not from the dropdown. Pass `-System` from an elevated prompt
@@ -52,33 +57,51 @@ second window blurs the first, which would quit before anyone saw it.
 
 ### Data
 
-`ccusage` is pinned to a version rather than `@latest`, which would re-resolve
-against the npm registry on every run and fail offline. Runners are tried in
-order and the first one that works wins:
+Runners are tried in order and the first one that produces a number wins:
 
 ```
-ccusage                          (global install, if present — skips ~4.6s)
+<node.exe recorded at install> runtime\node_modules\ccusage\src\cli.js
+ccusage                          (a global install, if there is one)
 pnpx ccusage@20.0.19
 npx -y ccusage@20.0.19
 %LOCALAPPDATA%\pnpm\pnpx.CMD     (in case the saver inherits a thin PATH)
 ```
 
-Measured on the development machine: `pnpx` alone costs most of the time in
-package resolution and node startup before ccusage does any work. A refresh takes
-**about 4 seconds on an idle machine and up to 9 under load**. Far too slow to
-block the first frame, so the counter is seeded from
-`%LOCALAPPDATA%\clawd-saver\last.json` and updated when the fetch lands. The
+The bundled copy is first because it is the only runner that consults neither
+PATH nor a package resolver. Measured on the development machine:
+
+| Runner | Normal PATH | PATH with no node or pnpm |
+|---|---|---|
+| bundled copy | **1.0 s** | **1.0 s** |
+| `pnpx` | 2–13 s, ~20 s on the first run of a day | fails in 0.08 s |
+
+Both columns are the reason it exists. `pnpx` spends nearly all of that time
+resolving the package rather than running it, and a screensaver the system
+launches can inherit a PATH with no package runner on it at all — which is what
+"the counter only ever showed `$--.--`" turned out to be.
+
+Everything below the bundled copy is a fallback, for an install that predates the
+`runtime\` directory or one where node has since moved. A stale `node.txt` is not
+fatal either: the default installer location is tried before the bundled copy is
+given up on.
+
+The version is pinned rather than `@latest`, which would re-resolve against the
+npm registry on every run and fail offline. `install.ps1` reads it out of
+`saver/src/usage.rs`, so the bundled copy and the `pnpx` fallback cannot drift
+apart.
+
+The alternatives — a global install, the `ccstats` crate, and reading the
+transcripts natively — are measured and compared in
+[docs/2026-08-06-usage-data-path.md](docs/2026-08-06-usage-data-path.md).
+
+A second is still too long to block the first frame, so the counter is seeded
+from `%LOCALAPPDATA%\clawd-saver\last.json` and updated when the fetch lands. The
 cache is keyed by date — yesterday's total is never shown as today's.
 
 Refresh runs every **10 seconds**, and the poller sleeps only the remainder of
-the interval rather than the whole of it — a flat sleep after a 4–9 s fetch would
-stretch the cadence to 14–19 s.
-
-That is close to the floor for this design: node is running roughly 40–80% of the
-time the saver is up, depending on machine load. Installing ccusage globally
-(`pnpm add -g ccusage`) skips the `pnpx` resolution step entirely and roughly
-halves the fetch, which is the single best way to bring that down. The runner
-chain already prefers a global install when it finds one.
+the interval rather than the whole of it, with a 5 s floor. Without the floor a
+fetch that outlasts the interval leaves node running continuously for as long as
+the saver is up.
 
 Change the cadence in `saver/src/saver.rs`:
 
@@ -93,21 +116,19 @@ place to see what happened. One line per session and per fetch:
 
 ```
 2026-08-06 09:36:48  saver start   1 display(s), seed=none
-2026-08-06 09:36:51  fetch ok         2.3s  via pnpx  $69.70
-2026-08-06 09:36:52  fetch FAILED     0.9s
-    ccusage: exit code: 1 - 'ccusage' is not recognized ...
+2026-08-06 09:36:51  fetch ok         2.5s  via pnpx  $163.78
+2026-08-06 09:37:04  fetch FAILED     0.9s
+    ccusage: exit code: 1 - 'ccusage' is not recognized ... | pnpx: ...
     PATH=C:\Windows\System32
+2026-08-06 13:28:09  saver start   1 display(s), seed=$202.19 cached
+2026-08-06 13:28:10  fetch ok         1.0s  via local  $202.19
 ```
 
-`via` is the part to read first. A fetch through `pnpx` costs ten to twenty
-seconds — most of it package resolution, not ccusage — and the first run of a
-day is worse because the dlx cache has to be rebuilt. That is long enough that
-the saver gets dismissed before the figure ever lands, which reads as a counter
-stuck on `$--.--`.
-
-`pnpm add -g ccusage` removes that entirely. The runner chain already prefers a
-global install, so nothing else has to change; measured here it took a fetch from
-13s to under 1s.
+`via` is the part to read first. Anything other than `local` means the bundled
+copy was missing or unusable and the fetch fell through to a runner that costs
+seconds and needs a package runner on PATH — long enough that the saver can be
+dismissed before the figure ever lands, which reads as a counter stuck on
+`$--.--`. Re-running `install.ps1` puts the bundled copy back.
 
 The log is capped and trims itself.
 
