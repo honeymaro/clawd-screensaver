@@ -119,6 +119,18 @@ pub fn run(opts: &Opts) -> wry::Result<()> {
         return Ok(());
     }
 
+    // One line per session. Paired with the fetch lines it answers the two
+    // questions that have cost the most time: did the saver start at all, and
+    // did it have a same-day figure to show before the first fetch landed.
+    usage::log(&format!(
+        "saver start   {} display(s), seed={}",
+        surfaces.len(),
+        match seed.cost {
+            Some(c) => format!("${c:.2} cached"),
+            None => "none".into(),
+        }
+    ));
+
     usage::spawn_poller(proxy.clone(), REFRESH);
 
     if let Some(ms) = opts.exit_after_ms {

@@ -53,27 +53,33 @@ impl Usage {
     }
 }
 
-/// Local calendar date as `YYYYMMDD`. ccusage groups by local timezone, so a UTC
-/// date would report the wrong day for part of every evening.
-fn today() -> String {
-    #[repr(C)]
-    #[derive(Default)]
-    struct SystemTimeFields {
-        year: u16,
-        month: u16,
-        day_of_week: u16,
-        day: u16,
-        hour: u16,
-        minute: u16,
-        second: u16,
-        milliseconds: u16,
-    }
+#[repr(C)]
+#[derive(Default)]
+struct SystemTimeFields {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+fn local_now() -> SystemTimeFields {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetLocalTime(st: *mut SystemTimeFields);
     }
     let mut st = SystemTimeFields::default();
     unsafe { GetLocalTime(&mut st) };
+    st
+}
+
+/// Local calendar date as `YYYYMMDD`. ccusage groups by local timezone, so a UTC
+/// date would report the wrong day for part of every evening.
+fn today() -> String {
+    let st = local_now();
     format!("{:04}{:02}{:02}", st.year, st.month, st.day)
 }
 
@@ -111,8 +117,12 @@ fn runners() -> Vec<(String, Vec<String>)> {
     list
 }
 
-pub fn fetch() -> Result<f64, String> {
+/// On success, also reports which runner won — the difference between a
+/// globally installed `ccusage` and the pnpx fallback is an order of magnitude
+/// in wall-clock, so the log is close to useless without it.
+pub fn fetch() -> Result<(f64, String), String> {
     let day = today();
+    let started = std::time::Instant::now();
     let mut problems = Vec::new();
 
     for (program, lead) in runners() {
@@ -124,18 +134,34 @@ pub fn fetch() -> Result<f64, String> {
 
         match cmd.output() {
             Ok(out) if out.status.success() => match parse_total(&out.stdout) {
-                Ok(cost) => return Ok(cost),
+                Ok(cost) => {
+                    log(&format!(
+                        "fetch ok      {:>6.1}s  via {program}  ${cost:.2}",
+                        started.elapsed().as_secs_f32()
+                    ));
+                    return Ok((cost, program));
+                }
                 Err(e) => problems.push(format!("{program}: {e}")),
             },
             Ok(out) => problems.push(format!(
-                "{program}: exit {} — {}",
+                "{program}: {} - {}",
                 out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
+                String::from_utf8_lossy(&out.stderr).trim().replace('\n', " ")
             )),
             Err(e) => problems.push(format!("{program}: {e}")),
         }
     }
-    Err(problems.join(" | "))
+
+    let why = problems.join(" | ");
+    // The environment is only worth recording when something broke; a thinner
+    // PATH than an interactive shell has been the standing suspicion for a
+    // process the system launches.
+    log(&format!(
+        "fetch FAILED  {:>6.1}s\n    {why}\n    PATH={}",
+        started.elapsed().as_secs_f32(),
+        std::env::var("PATH").unwrap_or_default()
+    ));
+    Err(why)
 }
 
 fn parse_total(stdout: &[u8]) -> Result<f64, String> {
@@ -152,6 +178,49 @@ fn parse_total(stdout: &[u8]) -> Result<f64, String> {
         .and_then(|t| t.get("totalCost"))
         .and_then(serde_json::Value::as_f64)
         .ok_or_else(|| "totals.totalCost missing".to_string())
+}
+
+// ── Diagnostic log ───────────────────────────────────────────────────────────
+//
+// A screensaver runs with no console, so a fetch that fails or merely takes
+// twenty seconds leaves no trace anywhere. Three separate investigations into
+// "it just shows $--.--" each had to start by bolting on temporary logging, so
+// this is permanent. One line per fetch: which runner won, how long it took,
+// and what came back — that is what each of those investigations actually
+// needed.
+
+const LOG_MAX_BYTES: u64 = 64 * 1024;
+const LOG_KEEP_LINES: usize = 300;
+
+fn log_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("clawd-saver").join("log.txt"))
+}
+
+pub fn log(msg: &str) {
+    use std::io::Write;
+    let Some(path) = log_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    // Trim before appending so the file cannot grow without bound. Rewriting a
+    // 64 KB file a few times a month costs nothing.
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES)
+        && let Ok(body) = std::fs::read_to_string(&path)
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        let keep = lines.len().saturating_sub(LOG_KEEP_LINES);
+        let _ = std::fs::write(&path, lines[keep..].join("\r\n") + "\r\n");
+    }
+
+    let t = local_now();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            f,
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}  {msg}",
+            t.year, t.month, t.day, t.hour, t.minute, t.second
+        );
+    }
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -205,9 +274,13 @@ pub fn initial() -> Usage {
 /// Fetches immediately, then on an interval, pushing each result onto the event
 /// loop. Stops as soon as the event loop is gone.
 ///
-/// The wait is the remainder of the interval, not the whole of it. A fetch takes
-/// 7-9s, so sleeping the full interval on top would stretch a requested 10s
-/// cadence into 18s.
+/// The wait is the remainder of the interval, not the whole of it, so a fetch
+/// that takes several seconds does not stretch the requested cadence by that
+/// much on top.
+///
+/// But the remainder alone is wrong when a fetch outlasts the interval — it
+/// comes out zero and node then runs continuously for as long as the saver is
+/// up. MIN_IDLE keeps a floor under it.
 pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
     std::thread::spawn(move || {
         loop {
@@ -222,8 +295,9 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
                 return;
             }
 
+            // fetch() writes its own log line, so every call site is covered.
             let usage = match fetch() {
-                Ok(cost) => {
+                Ok((cost, _)) => {
                     write_cache(cost);
                     Usage {
                         cost: Some(cost),
@@ -238,7 +312,8 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
             if proxy.send_event(UserEvent::Usage(usage)).is_err() {
                 return;
             }
-            std::thread::sleep(interval.saturating_sub(started.elapsed()));
+            const MIN_IDLE: Duration = Duration::from_secs(5);
+            std::thread::sleep(interval.saturating_sub(started.elapsed()).max(MIN_IDLE));
         }
     });
 }
@@ -248,11 +323,16 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
 pub fn print_once() {
     let started = std::time::Instant::now();
     match fetch() {
-        Ok(cost) => {
+        Ok((cost, runner)) => {
             write_cache(cost);
-            println!("today ({}) = ${cost:.4}   [{:?}]", today(), started.elapsed());
+            println!(
+                "today ({}) = ${cost:.4}   [{:?} via {runner}]",
+                today(),
+                started.elapsed()
+            );
             println!("cache  = {:?}", cache_path());
             println!("reread = {:?}", read_cache());
+            println!("log    = {:?}", log_path());
         }
         Err(e) => println!("FAILED after {:?}\n{e}", started.elapsed()),
     }

@@ -86,6 +86,31 @@ Change the cadence in `saver/src/saver.rs`:
 const REFRESH: Duration = Duration::from_secs(10);
 ```
 
+### When the counter will not fill in
+
+A screensaver has no console, so `%LOCALAPPDATA%\clawd-saver\log.txt` is the only
+place to see what happened. One line per session and per fetch:
+
+```
+2026-08-06 09:36:48  saver start   1 display(s), seed=none
+2026-08-06 09:36:51  fetch ok         2.3s  via pnpx  $69.70
+2026-08-06 09:36:52  fetch FAILED     0.9s
+    ccusage: exit code: 1 - 'ccusage' is not recognized ...
+    PATH=C:\Windows\System32
+```
+
+`via` is the part to read first. A fetch through `pnpx` costs ten to twenty
+seconds — most of it package resolution, not ccusage — and the first run of a
+day is worse because the dlx cache has to be rebuilt. That is long enough that
+the saver gets dismissed before the figure ever lands, which reads as a counter
+stuck on `$--.--`.
+
+`pnpm add -g ccusage` removes that entirely. The runner chain already prefers a
+global install, so nothing else has to change; measured here it took a fetch from
+13s to under 1s.
+
+The log is capped and trims itself.
+
 ## Command line
 
 Windows passes `/s`, `/c`, `/c:<hwnd>`, or `/p <hwnd>`. A bare invocation means
