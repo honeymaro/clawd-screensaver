@@ -72,12 +72,18 @@ happens while the page is animating a canvas on every display:
 
 Across twelve logged `local` fetches: 1.0 s minimum, 1.8 s median, 6.8 s maximum.
 
-The cause is not established. Those samples were taken on a machine that was
-also compiling and running node at the time, so saver load and ambient load are
-not separated, and no controlled measurement has been made. What the log does
-establish is that the shell figures are a best case for both runners rather than
-a typical one, and that the ratio between them survives contact with a real
-session. Treat every number in this document as a comparison, not a promise.
+A day later the cause was narrowed down, and it does not look like the saver:
+fetch duration tracks whatever else is reading and writing the transcript tree,
+and having the saver open at all costs about 1.5× machine-wide rather than that
+being a cost specific to fetching from inside it. Whether being inside costs
+anything further is unresolved on three or four samples.
+[The 2026-08-07 note](2026-08-07-fetch-latency-and-cache-freshness.md) has the
+measurements.
+
+The consequence for this document stands either way. The shell figures above are
+a best case for both runners rather than a typical one, and what survives
+contact with a real session is the ratio between them. Treat every number here
+as a comparison, not a promise.
 
 ### Why not a global install
 

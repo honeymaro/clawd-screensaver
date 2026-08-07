@@ -37,7 +37,7 @@ if you want it in the list.
 Rust + [`tao`](https://crates.io/crates/tao) + [`wry`](https://crates.io/crates/wry) —
 the window and webview crates that Tauri is built on, used directly without the
 Tauri framework, CLI, bundler, or IPC layer. WebView2 ships with Windows 11, so
-nothing is bundled. The release binary is **622 KB**.
+nothing is bundled. The release binary is **628 KB**.
 
 The page is embedded with `include_str!`, so the `.scr` is a single self-contained
 file.
@@ -102,16 +102,40 @@ A second is still too long to block the first frame, so the counter is seeded
 from `%LOCALAPPDATA%\clawd-saver\last.json` and updated when the fetch lands. The
 cache is keyed by date — yesterday's total is never shown as today's.
 
-Refresh runs every **10 seconds**, and the poller sleeps only the remainder of
-the interval rather than the whole of it, with a 5 s floor. Without the floor a
-fetch that outlasts the interval leaves node running continuously for as long as
-the saver is up.
+**The cache is refreshed by a process that outlives the saver.** Entering `/s`
+launches a detached copy of the binary with `--refresh-cache`, which fetches
+once, writes the cache and exits. Without it the cache moved only when a session
+lasted longer than a fetch — and on a machine in use the saver is dismissed a
+second or two after it appears, so the figure could sit frozen for an hour while
+nothing was actually broken. Nothing is launched when the cache is under 60 s
+old, and a `refresh.lock` keeps two refreshers from overlapping.
+
+Refresh runs every **10 seconds** while the saver is up, and the poller waits
+`max(interval - fetch, fetch)`, floored at 5 s. Up to half the interval that is
+just the remainder, so the cadence holds. Past half — 5 s here, which the 9.4 s
+busy-load median below clears easily — the wait is the fetch's own duration and
+the duty cycle is pinned at one half. A 16 s fetch used to be followed by another
+5 s later, so the saver spent a busy period re-reading the same transcripts it
+was competing for.
+
+A launch whose cache is stale runs ccusage twice, once in the refresher and once
+in the poller. That is the price of the cache advancing regardless of how long
+the session lasts; the two are usually staggered by WebView2 startup rather than
+running together.
 
 Change the cadence in `saver/src/saver.rs`:
 
 ```rust
 const REFRESH: Duration = Duration::from_secs(10);
 ```
+
+Fetches are slow for a reason that looks external to this program. ccusage walks
+the whole transcript tree — 2071 files and 491 MB here — so its wall-clock tracks
+whatever else is touching those files. Grouped by a proxy for that: median 3.6 s
+idle against 9.4 s while Claude Code is working, worst case 62.8 s against
+195 s. The day's own spend costs nothing at all, and having the saver open costs
+about 1.5× machine-wide. The workings are in
+[docs/2026-08-07-fetch-latency-and-cache-freshness.md](docs/2026-08-07-fetch-latency-and-cache-freshness.md).
 
 ### When the counter will not fill in
 
@@ -126,7 +150,11 @@ place to see what happened. One line per session and per fetch:
     PATH=C:\Windows\System32
 2026-08-06 13:28:09  saver start   1 display(s), seed=$202.19 cached
 2026-08-06 13:28:10  fetch ok         1.0s  via local  $202.19
+2026-08-07 14:02:42  fetch ok         2.3s  via local  $250.96   [detached]
 ```
+
+A `[detached]` tag means the refresher, not the poller — that is how a ccusage
+running with nothing on screen is accounted for.
 
 `via` is the part to read first. Anything other than `local` means the bundled
 copy was missing or unusable and the fetch fell through to a runner that costs
@@ -144,6 +172,10 @@ config.
 `/p` — the settings-dialog thumbnail — is deliberately unimplemented and exits
 immediately, leaving the preview black. Standing up a WebView2 instance in a
 postage-stamp pane costs far more than it is worth.
+
+`--refresh-cache` is not a development switch: it is how a running saver
+identifies the detached child it launches to refresh `last.json`. It opens no
+window.
 
 Development switches:
 

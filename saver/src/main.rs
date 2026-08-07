@@ -31,6 +31,9 @@ pub struct Opts {
     pub diag: bool,
     /// Dev switch: run the ccusage pipeline once and print, opening no window.
     pub print_usage: bool,
+    /// Not a dev switch: how the detached child launched by a running saver
+    /// identifies itself. It refreshes the cache and exits, opening no window.
+    pub refresh_cache: bool,
 }
 
 fn parse_args() -> Opts {
@@ -45,6 +48,7 @@ fn parse_args() -> Opts {
     let mut ignore_input = false;
     let mut diag = false;
     let mut print_usage = false;
+    let mut refresh_cache = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -62,6 +66,7 @@ fn parse_args() -> Opts {
                 "--ignore-input" => ignore_input = true,
                 "--diag" => diag = true,
                 "--print-usage" => print_usage = true,
+                "--refresh-cache" => refresh_cache = true,
                 "--exit-after" => {
                     exit_after_ms = args.get(i + 1).and_then(|v| v.parse().ok());
                     i += 1;
@@ -79,6 +84,7 @@ fn parse_args() -> Opts {
         ignore_input,
         diag,
         print_usage,
+        refresh_cache,
     }
 }
 
@@ -104,6 +110,13 @@ fn main() {
         return;
     }
 
+    // Checked before the mode match, and before anything can open a window, so
+    // the child can never recurse into launching another child.
+    if opts.refresh_cache {
+        usage::refresh_cache_once();
+        return;
+    }
+
     match opts.mode {
         // Rendering a WebView2 instance into the settings dialog's postage-stamp
         // thumbnail costs far more than it is worth, so the preview stays blank.
@@ -119,6 +132,12 @@ fn main() {
             ),
         ),
         Mode::Run => {
+            // Started before the window exists, for both of its reasons: the
+            // fetch is already in flight while WebView2 spins up, and it keeps
+            // going if this saver is dismissed a second from now — which is the
+            // common case on a machine someone is actually using, and the reason
+            // the cached figure used to freeze for hours.
+            usage::spawn_detached_refresh();
             if let Err(e) = saver::run(&opts) {
                 message_box("Clawd Saver", &format!("Failed to start:\n\n{e}"));
             }

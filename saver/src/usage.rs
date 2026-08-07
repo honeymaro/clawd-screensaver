@@ -1,9 +1,9 @@
 //! Reads today's Claude Code spend by shelling out to ccusage.
 
 use std::{
-    os::windows::process::CommandExt,
+    os::windows::{fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,6 +18,10 @@ const CCUSAGE: &str = "ccusage@20.0.19";
 
 /// Stops a console window from flashing onto the screensaver when we shell out.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Cuts the child loose from this process, so it keeps running after the saver
+/// that launched it is gone. The whole point of the refresher below.
+const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 use crate::saver::UserEvent;
 
@@ -203,7 +207,12 @@ fn runners() -> Vec<Runner> {
 /// On success, also reports which runner won — the difference between the local
 /// copy and the pnpx fallback is an order of magnitude in wall-clock, so the log
 /// is close to useless without it.
-pub fn fetch() -> Result<(f64, String), String> {
+///
+/// `tag` is appended to the log line to say who asked. Fetches now come from two
+/// places that behave very differently — the poller inside a live saver and the
+/// detached refresher that outlives it — and a log that cannot tell them apart
+/// makes "why is ccusage running with nothing on screen" unanswerable.
+pub fn fetch(tag: &str) -> Result<(f64, String), String> {
     let day = today();
     let started = std::time::Instant::now();
     let mut problems = Vec::new();
@@ -235,7 +244,7 @@ pub fn fetch() -> Result<(f64, String), String> {
                         format!("   (after {})", stepped_over.join(", "))
                     };
                     log(&format!(
-                        "fetch ok      {:>6.1}s  via {label}  ${cost:.2}{after}",
+                        "fetch ok      {:>6.1}s  via {label}  ${cost:.2}{after}{tag}",
                         started.elapsed().as_secs_f32()
                     ));
                     return Ok((cost, label.to_string()));
@@ -257,7 +266,7 @@ pub fn fetch() -> Result<(f64, String), String> {
     // PATH than an interactive shell has been the standing suspicion for a
     // process the system launches.
     log(&format!(
-        "fetch FAILED  {:>6.1}s\n    {why}\n    PATH={}",
+        "fetch FAILED  {:>6.1}s{tag}\n    {why}\n    PATH={}",
         started.elapsed().as_secs_f32(),
         std::env::var("PATH").unwrap_or_default()
     ));
@@ -351,7 +360,155 @@ fn write_cache(cost: f64) {
         "{{\"day\":\"{}\",\"cost\":{cost:.4},\"at\":{at}}}",
         today()
     );
-    let _ = std::fs::write(path, body);
+
+    // Written beside the target and renamed into place. Two writers can now
+    // reach here at once — a live saver's poller and the detached refresher —
+    // and a reader that caught a half-written file would fall back to showing no
+    // figure at all, which is the exact symptom this file exists to prevent.
+    //
+    // The staging name carries the pid. A single shared one would have both
+    // writers truncating each other mid-write and then renaming the result into
+    // place, which is the corruption this is supposed to prevent rather than a
+    // cure for it.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, &body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&tmp);
+    if std::fs::write(&path, &body).is_err() {
+        // By this point fetch() has already logged a figure. Without this line
+        // the log would show a successful fetch and the screen would keep
+        // showing the old number, with nothing to connect the two.
+        log("cache write FAILED  the figure above did not reach last.json");
+    }
+}
+
+/// How long ago today's cached figure was written. `None` means there is nothing
+/// usable cached, either because no run has succeeded or because what is there
+/// belongs to a previous day.
+fn cache_age() -> Option<Duration> {
+    let raw = std::fs::read_to_string(cache_path()?).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if v.get("day").and_then(|d| d.as_str())? != today() {
+        return None;
+    }
+    let at = v.get("at").and_then(serde_json::Value::as_u64)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    // A timestamp in the future means the clock moved backwards — an NTP
+    // correction, or a dual-boot machine disagreeing about whether the RTC is
+    // UTC. Clamping that to zero would report the cache as just written and
+    // suppress every refresh until real time caught up, so it is reported as
+    // infinitely old instead: an unreadable age should cause a refresh, not
+    // prevent one.
+    Some(Duration::from_secs(now.checked_sub(at).unwrap_or(u64::MAX)))
+}
+
+// ── Detached cache refresh ───────────────────────────────────────────────────
+//
+// On a machine in active use the saver is dismissed a second or two after it
+// appears, and a fetch has been measured at anything from 1.0s to 195s. So the
+// poller below usually never completes a single run: the cache never moves, and
+// every later appearance reseeds from the same frozen figure. Every part is
+// working and the counter still looks stuck.
+//
+// The cure is to stop tying the cache to the saver's lifetime. A detached child
+// does one fetch and writes the cache whether or not the saver that launched it
+// is still on screen, so the next appearance starts from something current even
+// if it too lasts two seconds.
+
+/// Skip the refresh when the cache is already this fresh. Without it, a saver
+/// appearing every minute would mean a ccusage every minute — and measured
+/// against the transcript tree, ccusage is the single most expensive thing this
+/// program does.
+const CACHE_FRESH_FOR: Duration = Duration::from_secs(60);
+
+fn lock_path() -> Option<PathBuf> {
+    app_dir().map(|d| d.join("refresh.lock"))
+}
+
+/// Mutual exclusion between refreshers. `None` means one is already in flight
+/// and this process should do nothing.
+///
+/// The lock is the returned open handle, not the file on disk — hold it for as
+/// long as the refresh lasts. `share_mode(0)` makes Windows refuse a second
+/// opener while it lives, and Windows closes it however this process ends,
+/// including a kill and including a panic, which in this binary aborts rather
+/// than unwinds and so runs no destructor.
+///
+/// That is why there is no staleness timeout here. A file left behind by a dead
+/// refresher is inert: nothing holds it, so the next opener simply takes it. The
+/// alternative — judging abandonment by the file's age — has to guess a
+/// threshold above the slowest legitimate fetch, and would still hand the lock
+/// to a second refresher while the first was merely slow.
+fn take_refresh_lock() -> Option<std::fs::File> {
+    let path = lock_path()?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(&path)
+    {
+        Ok(handle) => Some(handle),
+        // ERROR_SHARING_VIOLATION: a refresh is already running. The expected
+        // outcome, and the only one not worth a log line.
+        Err(e) if e.raw_os_error() == Some(32) => None,
+        Err(e) => {
+            // Anything else disables refreshing entirely, so it has to be
+            // visible rather than look like ordinary contention.
+            log(&format!("refresh lock unavailable: {e}"));
+            None
+        }
+    }
+}
+
+/// Entry point for the detached child: one fetch straight into the cache, no
+/// window, no event loop.
+pub fn refresh_cache_once() {
+    let Some(_lock) = take_refresh_lock() else {
+        return;
+    };
+    if let Ok((cost, _)) = fetch("   [detached]") {
+        write_cache(cost);
+    }
+}
+
+/// Launches that child and deliberately does not wait for it.
+///
+/// Dropping the handle is the intended behaviour, not an oversight: on Windows
+/// the child outlives the parent, and waiting for it here would reintroduce
+/// exactly the coupling this is meant to break.
+pub fn spawn_detached_refresh() {
+    if cache_age().is_some_and(|age| age < CACHE_FRESH_FOR) {
+        return;
+    }
+    // Both failures below are logged, because silence here is indistinguishable
+    // from "the cache was already fresh" — and the consequence is that the cache
+    // goes back to only advancing when a session outlives a fetch, which is the
+    // whole failure this path exists to remove.
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            log(&format!("detached refresh not launched: {e}"));
+            return;
+        }
+    };
+    // DETACHED_PROCESS on its own: CREATE_NO_WINDOW is documented as ignored
+    // when combined with it, and the release binary is a GUI-subsystem image
+    // with no console to suppress in the first place.
+    if let Err(e) = Command::new(exe)
+        .arg("--refresh-cache")
+        .creation_flags(DETACHED_PROCESS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        log(&format!("detached refresh not launched: {e}"));
+    }
 }
 
 /// What to show before the first ccusage run finishes. Even the local runner
@@ -370,16 +527,45 @@ pub fn initial() -> Usage {
     }
 }
 
+/// How long to wait before the next fetch, given how long the last one took.
+///
+/// The wait is the remainder of the interval rather than the whole of it, so a
+/// fetch costing a second or two does not stretch the cadence by that much on
+/// top. That alone is not enough once a fetch outlasts the interval: the
+/// remainder comes out zero and node then runs back to back for as long as the
+/// saver is up.
+///
+/// A floor of the last fetch's own duration fixes that, and it is the right
+/// floor rather than an arbitrary one. Every fetch re-reads the whole transcript
+/// tree — 2071 files and 491 MB on the development machine — and slow fetches
+/// are slow precisely because something else is already contending for those
+/// files. Polling hardest exactly then makes the contention worse, so the saver
+/// was measurably part of its own problem. Holding the wait to the last
+/// duration caps the duty cycle at half and changes nothing while fetches are
+/// quick.
+/// Note that the cadence starts stretching at *half* the interval, not at the
+/// interval: a 6s fetch against a 10s interval already waits 6s rather than 4s.
+/// Past that point the duty cycle is pinned at one half whatever happens.
+fn next_wait(interval: Duration, elapsed: Duration) -> Duration {
+    /// Only binds when the interval is under twice this, which at the
+    /// configured 10s it never is — one of the other two terms is always at
+    /// least 5s. It is here so that lowering REFRESH cannot turn the poller
+    /// into a continuous loop.
+    const MIN_IDLE: Duration = Duration::from_secs(5);
+    interval.saturating_sub(elapsed).max(elapsed).max(MIN_IDLE)
+}
+
+// A gate that skipped the poller's fetch when the cache was newer than the
+// interval was tried here and removed. It was meant to stop a launch from
+// running ccusage twice, once in the detached refresher and once in the poller.
+// Measured, it did neither job: the poller's first check usually happens before
+// the refresher has written anything, so the duplicate survived, and because the
+// poller's own write then made the next iteration skip, the effective refresh
+// rate fell from 10s to 20s. The duplicate is documented as a known cost
+// instead.
+
 /// Fetches immediately, then on an interval, pushing each result onto the event
 /// loop. Stops as soon as the event loop is gone.
-///
-/// The wait is the remainder of the interval, not the whole of it, so a fetch
-/// that takes several seconds does not stretch the requested cadence by that
-/// much on top.
-///
-/// But the remainder alone is wrong when a fetch outlasts the interval — it
-/// comes out zero and node then runs continuously for as long as the saver is
-/// up. MIN_IDLE keeps a floor under it.
 pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
     std::thread::spawn(move || {
         loop {
@@ -396,7 +582,7 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
             }
 
             // fetch() writes its own log line, so every call site is covered.
-            let usage = match fetch() {
+            let usage = match fetch("") {
                 Ok((cost, _)) => {
                     write_cache(cost);
                     Usage {
@@ -412,8 +598,7 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration) {
             if proxy.send_event(UserEvent::Usage(usage)).is_err() {
                 return;
             }
-            const MIN_IDLE: Duration = Duration::from_secs(5);
-            std::thread::sleep(interval.saturating_sub(started.elapsed()).max(MIN_IDLE));
+            std::thread::sleep(next_wait(interval, started.elapsed()));
         }
     });
 }
@@ -426,7 +611,7 @@ pub fn print_once() {
         "runners = {:?}",
         runners().iter().map(|r| r.label).collect::<Vec<_>>()
     );
-    match fetch() {
+    match fetch("   [--print-usage]") {
         Ok((cost, runner)) => {
             write_cache(cost);
             println!(
@@ -522,6 +707,46 @@ mod tests {
         let resolved = node_exe(&dir);
         assert!(resolved == "node" || PathBuf::from(&resolved).is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const TEN: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn a_quick_fetch_keeps_the_requested_cadence() {
+        // 1.5s of work then 8.5s of waiting is still a 10s cycle, which is what
+        // the interval asks for.
+        assert_eq!(
+            next_wait(TEN, Duration::from_millis(1500)),
+            Duration::from_millis(8500)
+        );
+    }
+
+    #[test]
+    fn a_fetch_slower_than_the_interval_backs_off_instead_of_running_flat_out() {
+        // The regression this guards: subtracting a 16s fetch from a 10s
+        // interval used to leave a 5s floor, so the saver spent three quarters
+        // of a busy period re-reading the transcript tree it was competing for.
+        for secs in [11, 16, 60, 195] {
+            let elapsed = Duration::from_secs(secs);
+            let wait = next_wait(TEN, elapsed);
+            assert!(wait >= elapsed, "{secs}s fetch waited only {wait:?}");
+        }
+    }
+
+    #[test]
+    fn the_cadence_stretches_from_half_the_interval_not_from_the_interval() {
+        // Documented wrongly once, in two files: a 6s fetch is well under the
+        // 10s interval but already pushes the cycle to 12s, because the wait is
+        // floored at the fetch's own duration.
+        assert_eq!(next_wait(TEN, Duration::from_secs(4)), Duration::from_secs(6));
+        assert_eq!(next_wait(TEN, Duration::from_secs(6)), Duration::from_secs(6));
+        assert_eq!(next_wait(TEN, Duration::from_secs(8)), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn there_is_always_a_gap_between_fetches() {
+        assert!(next_wait(TEN, Duration::ZERO) >= Duration::from_secs(5));
+        assert!(next_wait(Duration::ZERO, Duration::ZERO) >= Duration::from_secs(5));
     }
 
     #[test]
