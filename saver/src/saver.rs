@@ -10,7 +10,7 @@ use tao::{
 };
 use wry::{WebView, WebViewBuilder, http::Request};
 
-use crate::{Opts, usage};
+use crate::{Opts, settings::Period, usage};
 
 const UI: &str = include_str!("ui.html");
 
@@ -77,19 +77,23 @@ setTimeout(function () {
 /// Matches the page background so there is no white flash before first paint.
 const BG: wry::RGBA = (26, 24, 22, 255);
 
-pub fn run(opts: &Opts) -> wry::Result<()> {
+pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    // Whatever was last recorded today, so the counter is populated on the very
-    // first frame instead of after the ~2s ccusage round trip.
-    let seed = usage::initial();
+    // Whatever was last recorded today for this period, so the counter is
+    // populated on the very first frame instead of after the ~2s ccusage round
+    // trip.
+    let seed = usage::initial(period);
 
     // Comparing MonitorHandle values directly is awkward; positions are unique
     // per display and compare cleanly.
     let primary_pos = event_loop.primary_monitor().map(|m| m.position());
 
     let mut surfaces: Vec<(Window, WebView)> = Vec::new();
+    // Shared by every display's webview, and by the settings dialog in its own
+    // process. See usage::web_context for what happens without it.
+    let mut web_context = usage::web_context();
 
     if opts.windowed {
         surfaces.push(build_surface(
@@ -101,6 +105,7 @@ pub fn run(opts: &Opts) -> wry::Result<()> {
             &seed,
             &proxy,
             &event_loop,
+            &mut web_context,
         )?);
     } else {
         for monitor in event_loop.available_monitors() {
@@ -111,8 +116,15 @@ pub fn run(opts: &Opts) -> wry::Result<()> {
                 .with_always_on_top(true)
                 .with_visible(false) // revealed once the webview exists
                 .with_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
-            let (window, webview) =
-                build_surface(builder, is_primary, opts, &seed, &proxy, &event_loop)?;
+            let (window, webview) = build_surface(
+                builder,
+                is_primary,
+                opts,
+                &seed,
+                &proxy,
+                &event_loop,
+                &mut web_context,
+            )?;
             window.set_cursor_visible(false);
             window.set_visible(true);
             surfaces.push((window, webview));
@@ -127,15 +139,16 @@ pub fn run(opts: &Opts) -> wry::Result<()> {
     // questions that have cost the most time: did the saver start at all, and
     // did it have a same-day figure to show before the first fetch landed.
     usage::log(&format!(
-        "saver start   {} display(s), seed={}",
+        "saver start   {} display(s), {}, seed={}",
         surfaces.len(),
+        period.key(),
         match seed.cost {
             Some(c) => format!("${c:.2} cached"),
             None => "none".into(),
         }
     ));
 
-    usage::spawn_poller(proxy.clone(), REFRESH);
+    usage::spawn_poller(proxy.clone(), REFRESH, period);
 
     if let Some(ms) = opts.exit_after_ms {
         let proxy = proxy.clone();
@@ -170,6 +183,24 @@ pub fn run(opts: &Opts) -> wry::Result<()> {
                 eprintln!("[saver] quit: close requested");
                 *control_flow = ControlFlow::Exit
             }
+            // A window can go away without asking first. Handling only
+            // CloseRequested left the event loop running with nothing on
+            // screen, and the poller runs off the event loop rather than off
+            // the window — so the process became an invisible thing shelling
+            // out to ccusage every ten seconds, holding a handle on the .scr
+            // that blocks reinstalling it. Observed lasting twenty minutes.
+            Event::WindowEvent {
+                event: WindowEvent::Destroyed,
+                window_id,
+                ..
+            } => {
+                // The id is logged because on a multi-monitor setup the useful
+                // question afterwards is which display went away.
+                usage::log(&format!(
+                    "saver quit    surface {window_id:?} was destroyed"
+                ));
+                *control_flow = ControlFlow::Exit
+            }
             _ => {}
         }
     });
@@ -182,6 +213,7 @@ fn build_surface(
     seed: &usage::Usage,
     proxy: &EventLoopProxy<UserEvent>,
     target: &EventLoop<UserEvent>,
+    web_context: &mut wry::WebContext,
 ) -> wry::Result<(Window, WebView)> {
     let window = builder.build(target).unwrap();
 
@@ -199,7 +231,7 @@ fn build_surface(
     }
 
     let quit_proxy = proxy.clone();
-    let webview = WebViewBuilder::new()
+    let webview = WebViewBuilder::new_with_web_context(web_context)
         .with_html(UI)
         .with_background_color(BG)
         .with_initialization_script(init)

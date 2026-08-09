@@ -137,7 +137,7 @@ smaller `REFRESH` from producing a continuous loop.
 ## 4. Decision: the cache no longer depends on the saver's lifetime
 
 A saver entering `/s` launches a detached copy of itself with `--refresh-cache`,
-which does one fetch, writes `last.json`, and exits. It opens no window and does
+which does one fetch, writes the cache, and exits. It opens no window and does
 not join the event loop.
 
 `DETACHED_PROCESS` is the point: the child survives the saver being dismissed, so
@@ -158,7 +158,7 @@ cache                   : $3.00 (planted)  ->  $250.96
 **Two guards, because a refresher is the most expensive thing this program
 does.**
 
-*A freshness gate.* Nothing is spawned when `last.json` is under 60 s old.
+*A freshness gate.* Nothing is spawned when the cached figure is under 60 s old.
 Without it, a saver appearing every minute would mean a ccusage every minute all
 day — which is precisely the contention §2 blames for the slow tail. Verified: a
 launch against a seconds-old cache spawned no child at all.
@@ -177,10 +177,14 @@ refresher while the first was merely slow, and left the process-kill case relyin
 on a destructor that `panic = "abort"` skips. The handle has none of those
 questions and is shorter.
 
-*A per-writer staging file.* Writes to `last.json` go to `last.tmp.<pid>` and are
-renamed into place. The first version used one shared `last.tmp`, which with two
-writers meant they could truncate each other mid-write and then rename the result
-into place — manufacturing the torn read the rename was added to prevent.
+*A per-writer staging file.* Cache writes go to a `.tmp.<pid>` beside the target
+and are renamed into place. The first version used one shared `last.tmp`, which
+with two writers meant they could truncate each other mid-write and then rename
+the result into place — manufacturing the torn read the rename was added to
+prevent.
+
+(The cache was a single `last.json` at the time. It is now one file per period,
+for reasons in [the period note](2026-08-07-selectable-spend-window.md).)
 
 **A launch with a stale cache runs ccusage twice**, once in the refresher and
 once in the poller's first iteration:

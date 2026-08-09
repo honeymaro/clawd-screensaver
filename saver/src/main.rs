@@ -2,7 +2,9 @@
 // Console is hidden in release only; debug builds keep it so println! is visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config;
 mod saver;
+mod settings;
 mod usage;
 
 /// How Windows invoked us. The screensaver contract is a small set of switches
@@ -11,7 +13,10 @@ pub enum Mode {
     /// `/s` — run full screen. The real thing.
     Run,
     /// `/c` or `/c:<hwnd>` — show the settings dialog. Also what a bare
-    /// double-click means.
+    /// invocation means, which is how the dialog is actually reached: the
+    /// `config` shell verb runs the file with no arguments at all. A
+    /// double-click is *not* this — the default verb is `open`, which is
+    /// `"%1" /S`.
     Config,
     /// `/p <hwnd>` — draw into the little preview pane of the settings dialog.
     Preview,
@@ -42,7 +47,9 @@ fn parse_args() -> Opts {
     // Windows is inconsistent here: the switch may be `/s`, `-s`, `/S`, and the
     // config variant arrives either as `/c` or glued to a window handle as
     // `/c:12345`.
-    let mut mode = Mode::Config; // bare invocation (double-click) means config
+    // No arguments means config: that is exactly what the `config` shell verb
+    // hands us, and it is the only route to the settings dialog.
+    let mut mode = Mode::Config;
     let mut windowed = false;
     let mut exit_after_ms = None;
     let mut ignore_input = false;
@@ -121,24 +128,25 @@ fn main() {
         // Rendering a WebView2 instance into the settings dialog's postage-stamp
         // thumbnail costs far more than it is worth, so the preview stays blank.
         Mode::Preview => {}
-        // The interval is read from the constant rather than spelled out, so this
-        // dialog cannot drift out of sync with what the poller actually does.
-        Mode::Config => message_box(
-            "Clawd Saver",
-            &format!(
-                "Clawd Saver has no settings.\n\nToday's Claude Code spend is read with ccusage \
-                 and refreshed every {} seconds while the saver runs.",
-                saver::REFRESH.as_secs()
-            ),
-        ),
+        Mode::Config => {
+            if let Err(e) = config::run(settings::load()) {
+                message_box("Clawd Saver", &format!("Could not open settings:\n\n{e}"));
+            }
+        }
         Mode::Run => {
+            // Read once for this launch, so the log line and the poller agree
+            // and settings.json is not opened twice. It is not what keeps the
+            // refresher and the poller from clobbering each other — the
+            // detached child re-reads the setting for itself, and what makes
+            // that safe is one cache file per period.
+            let period = settings::load();
             // Started before the window exists, for both of its reasons: the
             // fetch is already in flight while WebView2 spins up, and it keeps
             // going if this saver is dismissed a second from now — which is the
             // common case on a machine someone is actually using, and the reason
             // the cached figure used to freeze for hours.
-            usage::spawn_detached_refresh();
-            if let Err(e) = saver::run(&opts) {
+            usage::spawn_detached_refresh(period);
+            if let Err(e) = saver::run(&opts, period) {
                 message_box("Clawd Saver", &format!("Failed to start:\n\n{e}"));
             }
         }
@@ -147,7 +155,7 @@ fn main() {
 
 /// A message box straight from user32, so the `windows` crate stays out of the
 /// dependency tree for one dialog.
-fn message_box(caption: &str, text: &str) {
+pub fn message_box(caption: &str, text: &str) {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 

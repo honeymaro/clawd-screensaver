@@ -15,7 +15,13 @@
   Caveat: the Windows screensaver dropdown only enumerates .scr files that live
   in System32, so this one will not appear in that list. It still runs on idle -
   Windows reads the path from the registry, not from the dropdown. Use -System
-  (from an elevated prompt) if you want it listed.
+  (from an elevated prompt) if you want it listed. The dropdown's Settings button
+  is out of reach for the same reason, so to choose whether the counter shows
+  today, this week, this month, the last 7 days or the last 30 days: right-click
+  the .scr and pick Configure, or run
+  Start-Process <path> -Verb config. Neither a double-click nor /c on the command
+  line will do it - both start the screensaver instead, because .scr files go
+  through the shell association and its open verb is "%1" /S.
 
 .PARAMETER Timeout
   Idle minutes before the screensaver starts. Default 5.
@@ -111,6 +117,39 @@ function Assert-RuntimeVersion {
     Write-Warning 'Re-run without -SkipRuntime to replace it.'
 }
 
+# Older builds let WebView2 choose its own profile directory, which it derives
+# from the running module's path - and Windows does not spell that path the same
+# way every time. CLAWD-~1.SCR.WebView2 and clawd-saver.scr.WebView2, the 8.3
+# short and long spellings of one binary, were found side by side: two profiles
+# of the same cached page, tens of megabytes each. The binary now names the
+# directory itself; these are what is left behind.
+function Remove-LegacyLeftovers {
+    # The cache used to be one file for whichever period wrote last. It is now
+    # one per period (last-1d.json and friends), so the old name is never read
+    # or written again and only invites the question of which is current.
+    $stale = Join-Path $installDir 'last.json'
+    if (Test-Path $stale) {
+        try { Remove-Item $stale -Force -ErrorAction Stop; Write-Host '  removed the pre-period last.json' }
+        catch { Write-Warning "  could not remove $stale - $($_.Exception.Message)" }
+    }
+
+    Get-ChildItem $installDir -Directory -Filter '*.WebView2' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            # Held in their own variables: inside catch, $_ is the ErrorRecord
+            # rather than the pipeline item, so $_.Name there is empty.
+            $name = $_.Name
+            $path = $_.FullName
+            $mb = [math]::Round((Get-ChildItem $path -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+            try {
+                Remove-Item $path -Recurse -Force -ErrorAction Stop
+                Write-Host ("  reclaimed {0:N1} MB from the old {1}" -f $mb, $name)
+            } catch {
+                Write-Warning "  $name is in use and was left alone - close the screensaver and re-run"
+            }
+        }
+}
+
 # Installs the copy of ccusage the screensaver prefers over every PATH-dependent
 # runner. Never fatal: without it the saver still works, just slower and only
 # when it inherits a PATH with a package runner on it.
@@ -204,6 +243,8 @@ Copy-Item $exe $installScr -Force
 $size = (Get-Item $installScr).Length
 Write-Host ("Installed {0}  ({1:N0} bytes, {2:N2} MB)" -f $installScr, $size, ($size / 1MB))
 
+Remove-LegacyLeftovers
+
 if (-not $SkipRuntime) {
     try {
         Install-Runtime
@@ -234,6 +275,17 @@ Apply-Settings -Seconds $seconds -Active $true
 
 Write-Host ''
 Write-Host "Registered as the screensaver, starting after $Timeout minute(s) idle."
-Write-Host 'Try it now:   & "' -NoNewline; Write-Host $installScr -NoNewline; Write-Host '" /s'
-Write-Host 'Move the mouse or press a key to dismiss it.'
+# Both lines name a shell verb instead of passing a switch. Windows routes .scr
+# files through the shell association rather than running them, and scrfile's
+# verbs are `open -> "%1" /S` and `config -> "%1"`, so a switch written on the
+# command line is discarded either way. `& "<path>" /s` does still start the
+# saver, but only because open supplies /S itself - and `& "<path>" /c` does
+# exactly the same thing, never reaching the settings dialog. The dropdown that
+# would normally offer a Settings button does not list this screensaver unless
+# -System was used, so the dialog has to be named here.
+Write-Host 'Try it now:   Start-Process "' -NoNewline; Write-Host $installScr -NoNewline; Write-Host '" -Verb open'
+Write-Host '              Move the mouse or press a key to dismiss it.'
+Write-Host 'Settings:     Start-Process "' -NoNewline; Write-Host $installScr -NoNewline; Write-Host '" -Verb config'
+Write-Host '              (or right-click the .scr and pick Configure)'
+Write-Host '              today, this week, this month, last 7 days or last 30 days'
 Write-Host 'Remove with:  .\install.ps1 -Uninstall'

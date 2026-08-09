@@ -141,5 +141,21 @@ ok &= run('four-figure amount', false, { cost: 1234.56, state: 'ok' }, s => {
   for (let i = 0; i < 8; i++) s.tick(140);
 });
 
+// A rolling 30-day window reaches five figures on a heavy month, which is where
+// the amount row has to shrink instead of running off the stage.
+ok &= run('five-figure amount shrinks the row', false, { cost: 12345.67, state: 'ok' }, s => {
+  for (let i = 0; i < 8; i++) s.tick(140);
+});
+
+// Going from a five-figure figure to a blank re-measures the row at a different
+// scale mid-run. This file only catches throws and non-finite coordinates — a
+// wrong-but-finite position is verify-ui.js's job — so what this pins is that
+// the transition itself does not blow up.
+ok &= run('five-figure total then a blank reload', false, { cost: 98765.43, state: 'ok' }, s => {
+  for (let i = 0; i < 4; i++) s.tick(140);
+  s.win.CLAWD_USAGE({ cost: null, state: 'loading' });
+  for (let i = 0; i < 8; i++) s.tick(140);
+});
+
 console.log(ok ? '\nALL UI STATES EXECUTE CLEANLY' : '\nFAILURES ABOVE');
 process.exit(ok ? 0 : 1);

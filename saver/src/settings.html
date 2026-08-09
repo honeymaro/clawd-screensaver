@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clawd Saver</title>
+<style>
+  /* Same palette as the saver, so the two do not look like different programs. */
+  :root {
+    --bg:    #14120F;
+    --panel: #1F1B17;
+    --line:  #332D26;
+    --text:  #F0EEE6;
+    --dim:   #9A9185;
+    --coral: #D77757;
+    --gem:   #45A8A0;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    padding: 18px 20px;
+    /* A settings dialog is not a document; dragging a selection across it is
+       never what anyone meant to do. */
+    user-select: none;
+    cursor: default;
+  }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  .sub { margin: 0; font-size: 12px; color: var(--dim); }
+  /* The window is a fixed size and cannot be resized, so if the rows ever grow
+     past it — a longer option name, a substituted font with taller metrics —
+     something has to give. A scrollbar here means it is the list rather than
+     the Save and Cancel buttons being pushed off the bottom.
+     The padding is not decoration: setting overflow on one axis makes the other
+     a scroll container too, which clips anything drawn outside the padding box —
+     including the focus ring. It has to clear the ring's whole extent, which is
+     outline-offset plus outline-width, not just the offset: 2 + 2 below. Three
+     would leave the outermost pixel clipped on every row. The negative margin
+     puts the rows back where they were. */
+  .options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px;
+    margin: -4px;
+  }
+  .opt {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 11px 13px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    cursor: pointer;
+  }
+  .opt:hover { border-color: #4A4238; }
+  .opt.sel { border-color: var(--coral); background: #241C17; }
+  .dot {
+    flex: none;
+    width: 12px; height: 12px;
+    border: 2px solid var(--dim);
+    border-radius: 50%;
+  }
+  .opt.sel .dot { border-color: var(--coral); background: var(--coral); }
+  .name { font-weight: 600; }
+  .note { margin-left: auto; font-size: 12px; color: var(--dim); }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  button {
+    font: inherit;
+    padding: 7px 17px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: #4A4238; }
+  button.primary {
+    background: var(--coral);
+    border-color: var(--coral);
+    color: #1A120D;
+    font-weight: 600;
+  }
+  :focus-visible { outline: 2px solid var(--gem); outline-offset: 2px; }
+</style>
+</head>
+<body>
+  <h1>How much spend should the counter show?</h1>
+  <p class="sub">All of them end today. The calendar ones start over when the
+    period does; the rolling ones never reset.</p>
+  <div class="options" id="options"></div>
+  <div class="row">
+    <button id="cancel" type="button">Cancel</button>
+    <button id="save" type="button" class="primary">Save</button>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  // Keys must match Period::key() in settings.rs; the host round-trips them
+  // without interpreting them, so a mismatch here just means a saved choice the
+  // saver ignores.
+  const OPTIONS = [
+    { key: '1d',  name: 'Today',        note: 'today only'          },
+    { key: 'wtd', name: 'This week',    note: 'since the week began' },
+    { key: 'mtd', name: 'This month',   note: 'since the 1st'       },
+    { key: '7d',  name: 'Last 7 days',  note: 'rolling'             },
+    { key: '30d', name: 'Last 30 days', note: 'rolling'             },
+  ];
+
+  // The host injects the stored choice. Falling back to today matches what the
+  // saver does when settings.json is missing or unreadable, so the dialog can
+  // never show a selection the saver would not act on.
+  let selected = OPTIONS.some(o => o.key === window.CLAWD_PERIOD)
+    ? window.CLAWD_PERIOD
+    : '1d';
+
+  const list = document.getElementById('options');
+  const rows = OPTIONS.map((opt, i) => {
+    const el = document.createElement('div');
+    el.className = 'opt';
+    el.tabIndex = 0;
+    el.setAttribute('role', 'radio');
+    el.innerHTML =
+      '<span class="dot"></span><span class="name"></span><span class="note"></span>';
+    el.querySelector('.name').textContent = opt.name;
+    el.querySelector('.note').textContent = opt.note;
+    el.addEventListener('click', () => select(i));
+    list.appendChild(el);
+    return el;
+  });
+  list.setAttribute('role', 'radiogroup');
+
+  function select(i) {
+    selected = OPTIONS[i].key;
+    paint();
+    rows[i].focus();
+  }
+
+  function paint() {
+    OPTIONS.forEach((opt, i) => {
+      const on = opt.key === selected;
+      rows[i].classList.toggle('sel', on);
+      rows[i].setAttribute('aria-checked', String(on));
+    });
+  }
+
+  // Opened straight in a browser there is no host to talk to. Guarding here
+  // keeps the page inspectable without it throwing on every click.
+  const send = msg => { if (window.ipc) window.ipc.postMessage(msg); };
+  const commit = () => send('save:' + selected);
+  const dismiss = () => send('close');
+
+  document.getElementById('save').addEventListener('click', commit);
+  document.getElementById('cancel').addEventListener('click', dismiss);
+
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); dismiss(); return; }
+    if (e.key === 'Enter') {
+      // Enter on a focused button is already that button's own action. Running
+      // the global shortcut as well would make Enter on Cancel save first and
+      // close second, which is the one thing Cancel promises not to do — so
+      // leave buttons to themselves and keep the shortcut for the option rows.
+      if (e.target && e.target.tagName === 'BUTTON') return;
+      e.preventDefault();
+      commit();
+      return;
+    }
+    const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    // Same carve-out as Enter, for the same reason. An arrow pressed while Save
+    // or Cancel has focus would otherwise pull focus back into the list and
+    // change the selection on the way — quietly altering what a subsequent
+    // Enter would store.
+    if (e.target && e.target.tagName === 'BUTTON') return;
+    e.preventDefault();
+    const at = OPTIONS.findIndex(o => o.key === selected);
+    select((at + step + OPTIONS.length) % OPTIONS.length);
+  });
+
+  paint();
+  rows[OPTIONS.findIndex(o => o.key === selected)].focus();
+})();
+</script>
+</body>
+</html>

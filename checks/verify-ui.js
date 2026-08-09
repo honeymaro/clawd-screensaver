@@ -32,6 +32,7 @@ function assertMirrorsUi(font, poses) {
     'const OX = 4 + DX, OY = -1 + DY;',
     'const BASE = 47 + DY;',
     'const RX = 64 + DX, RY = 29 + DY, CELL = 3;',
+    'const AMOUNT_MAX_W = 96;',
   ]) {
     if (!UI.includes(line)) {
       throw new Error(`ui.html changed: "${line}" is gone — update verify-ui.js to match`);
@@ -48,6 +49,7 @@ function assertMirrorsUi(font, poses) {
 const W = 112, H = 74, DX = 13, DY = 19;
 const OX = 4 + DX, OY = -1 + DY, BASE = 47 + DY;
 const RX = 64 + DX, RY = 29 + DY;
+const AMOUNT_MAX_W = 96;
 const S = 14; // even, as resize() guarantees
 
 const POSES = [
@@ -86,6 +88,19 @@ function textWidth(t, s) {
   for (const ch of t) w += ((FONT[ch] ? FONT[ch][0].length : 3) + 1) * s;
   return w - s;
 }
+
+// Unlike the geometry above, these two are copied from ui.html rather than
+// re-derived, so on their own they only catch the two files disagreeing. The
+// real protection against a row that overflows is chk() below, which checks the
+// resulting boxes against the stage independently of how the scale was picked —
+// a wrong AMOUNT_MAX_W that let the row run off the edge still fails there. What
+// a copy cannot catch is the two files being wrong in the same direction, which
+// is why the expected-scale table further down states its answers outright.
+function amountScale(t) {
+  for (const s of [3, 2]) if (textWidth(t, s) <= AMOUNT_MAX_W) return s;
+  return 1;
+}
+const amountY = s => 13.5 - 2.5 * s;
 
 // Worst-case drift is the extreme corner of the random walk.
 const DRIFTS = [[0, 0], [3, 2], [-3, -2], [3, -2], [-3, 2]];
@@ -150,26 +165,39 @@ for (const [dx, dy] of DRIFTS) {
     problems.push(...gaps);
   }
 
-  // Amount row, from the narrowest to a wide four-figure day. Glyph boxes are
+  // Amount row, from the narrowest to a six-figure total. Glyph boxes are
   // checked individually because the dollar sign is two rows taller than the
   // digits and hangs outside the nominal text box.
-  for (const text of ['$--.--', '$0.00', '$33.47', '$123.45', '$1234.56']) {
-    const scale = 3, width = textWidth(text, scale);
+  //
+  // The long strings are not hypothetical: the counter can be set to a rolling
+  // 30-day window, and a month at this machine's rate is already five figures.
+  for (const text of ['$--.--', '$0.00', '$33.47', '$123.45', '$1234.56',
+                      '$9999.99', '$12345.67', '$123456.78']) {
+    const scale = amountScale(text), width = textWidth(text, scale);
+    const y = amountY(scale);
     let cx = Math.floor((W - width) / 2);
     for (const ch of text) {
       const rows = FONT[ch];
       const gy = (5 - rows.length) / 2 * scale;
       chk(`d(${dx},${dy}) glyph '${ch}' of "${text}"`,
-          cx, 6 + gy, rows[0].length * scale, rows.length * scale, dx, dy);
+          cx, y + gy, rows[0].length * scale, rows.length * scale, dx, dy);
       cx += (rows[0].length + 1) * scale;
     }
     const x = Math.floor((W - width) / 2);
-    chk(`d(${dx},${dy}) stale-dot "${text}"`, x + width + 3, 6, 2, 2, dx, dy);
+    chk(`d(${dx},${dy}) stale-dot "${text}"`, x + width + 3, y, 2, 2, dx, dy);
   }
 }
 
+// The step down must happen exactly where the row would otherwise overflow, and
+// nowhere earlier — a four-figure day shrinking would be a visible regression.
+for (const [text, want] of [['$1234.56', 3], ['$9999.99', 3], ['$12345.67', 2],
+                            ['$123456.78', 2], ['$--.--', 3]]) {
+  const got = amountScale(text);
+  if (got !== want) problems.push(`scale for "${text}": expected ${want}, got ${got}`);
+}
+
 console.log(`content bounds x ${minX} -> ${maxX}   y ${minY} -> ${maxY}   stage ${W}x${H}`);
-console.log(`amount widths: ` + ['$--.--','$33.47','$123.45','$1234.56']
-  .map(t => `${t}=${textWidth(t, 3)}`).join('  '));
+console.log(`amount widths: ` + ['$--.--','$33.47','$1234.56','$12345.67','$123456.78']
+  .map(t => `${t}=${textWidth(t, amountScale(t))}@x${amountScale(t)}`).join('  '));
 console.log(problems.length ? `PROBLEMS (${problems.length}):\n` + problems.slice(0, 25).join('\n')
                             : 'ALL RECTS PIXEL-ALIGNED AND IN BOUNDS (4 poses x 5 drift offsets)');

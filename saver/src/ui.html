@@ -31,6 +31,13 @@
   const OX = 4 + DX, OY = -1 + DY;   // 48-unit reference space -> stage
   const BASE = 47 + DY;              // ground line: feet and ore rest here
 
+  // Widest the amount row may draw. Centred text, plus the stale marker three
+  // units past it, plus three units of burn-in drift, all have to stay inside
+  // the stage — which works out at 96 units. It matters because the counter can
+  // be set to a 30-day total: five figures on a heavy month, and "$12345.67" is
+  // 99 units at the normal scale, so it would hang off the right edge.
+  const AMOUNT_MAX_W = 96;
+
   // Dark palette. A full-screen cream background is punishing at night, and
   // dark also costs less on an OLED panel.
   const BG        = '#14120F';
@@ -253,11 +260,22 @@
     return w - scale;   // no trailing gap
   }
 
+  // Largest scale the text still fits at. Only five figures and up drop below 3,
+  // so a day or a week renders exactly as it always did.
+  function amountScale(text) {
+    for (const s of [3, 2]) if (textWidth(text, s) <= AMOUNT_MAX_W) return s;
+    return 1;
+  }
+
   function drawAmount(now) {
     const text = amountGlyphs();
-    const scale = 3;
+    const scale = amountScale(text);
     const width = textWidth(text, scale);
     const x = Math.floor((W - width) / 2);
+    // Hold the row's centre line where it sits at scale 3, so a shrunken
+    // five-figure month is not also stranded high above the scene. Half units
+    // are safe: S is always even.
+    const y = 13.5 - 2.5 * scale;
     const state = usage ? usage.state : 'error';
 
     // With no figure to show yet, a static "$--.--" is indistinguishable from a
@@ -268,13 +286,13 @@
       const dashAt = [];
       for (let i = 0; i < text.length; i++) if (text[i] === '-') dashAt.push(i);
       const lit = dashAt[Math.floor(now / 200) % dashAt.length];
-      drawText(text, x, 6, scale, i => (i === lit ? AMOUNT : AMOUNT_D));
+      drawText(text, x, y, scale, i => (i === lit ? AMOUNT : AMOUNT_D));
     } else {
-      drawText(text, x, 6, scale, amountColor(now));
+      drawText(text, x, y, scale, amountColor(now));
     }
 
     // A dim marker when the figure on screen is not from a fresh ccusage run.
-    if (state !== 'ok' && state !== 'loading') rect(x + width + 3, 6, 2, 2, AMOUNT_D);
+    if (state !== 'ok' && state !== 'loading') rect(x + width + 3, y, 2, 2, AMOUNT_D);
   }
 
   function drawRock(now) {
