@@ -747,8 +747,10 @@ pub fn refresh_cache_once() {
         return;
     };
     // Read here rather than inherited from the launching saver: this is a fresh
-    // process, and settings.json is the same answer either way.
-    let period = crate::settings::load();
+    // process, and settings.json is the same answer either way. Only the period
+    // matters — the refresher draws nothing, so the scene is none of its
+    // business.
+    let period = crate::settings::load().period;
     if let Ok(f) = fetch("   [detached]", period) {
         write_cache(period, &f.day, f.cost);
     }
@@ -886,7 +888,7 @@ pub fn spawn_poller(proxy: EventLoopProxy<UserEvent>, interval: Duration, period
 /// Headless check: run the whole pipeline once and report, without opening a
 /// window.
 pub fn print_once() {
-    let period = crate::settings::load();
+    let period = crate::settings::load().period;
     let (since, until) = window(period);
     let started = std::time::Instant::now();
     println!("period  = {} ({since}..{until})", period.key());

@@ -40,6 +40,10 @@
 
   // Dark palette. A full-screen cream background is punishing at night, and
   // dark also costs less on an OLED panel.
+  //
+  // Only what the stage and Clawd himself need lives here; a scene's own
+  // materials belong to that scene. WOOD and the two steels are the exception,
+  // because a handle and a metal edge turn up in more than one of them.
   const BG        = '#14120F';
   const CORAL     = '#D77757';
   const EYE       = '#1F1A17';
@@ -49,11 +53,6 @@
   const WOOD      = '#8B5E3C';
   const STEEL     = '#7E858A';
   const STEEL_L   = '#AAB1B5';
-  const ROCK      = '#6F6862';
-  const ROCK_D    = '#57514B';
-  const GEM       = '#45A8A0';
-  const GEM_L     = '#86D6CF';
-  const CRACK     = '#17140F';
   // Not a drop shadow. On a near-black background there is nothing darker to
   // shade with, so the ground is a faintly lighter bar instead.
   const SHADOW    = '#241F1A';
@@ -66,34 +65,6 @@
   const LEGS = [9, 15, 30, 36].map(x => ({ x, y: 39, w: 3, h: 9 }));
   const ARM_L = { x: 0, y: 33, w: 7.5, h: 6 };
   const ARM_R = { x: 40.5, y: 33, w: 7.5, h: 6 };
-
-  // Ore block. 6x6 cells of 3 units = 18x18.
-  const RX = 64 + DX, RY = 29 + DY, CELL = 3;
-  const ROCK_MAP = [
-    '001000',
-    '023010',
-    '122000',
-    '000123',
-    '012200',
-    '000100',
-  ];
-  const ROCK_FILL = { '0': ROCK, '1': ROCK_D, '2': GEM, '3': GEM_L };
-
-  const CRACKS = [
-    [[7.5, 0, 1.5, 4.5], [9, 4.5, 1.5, 3], [7.5, 7.5, 1.5, 3]],
-    [[9, 10.5, 1.5, 4.5], [3, 6, 4.5, 1.5], [10.5, 9, 4.5, 1.5], [4.5, 13.5, 1.5, 4.5]],
-  ];
-
-  // Four discrete swing poses. `step` is the stair direction of the handle
-  // blocks, `armDY` how far the right arm rides up with it. Only grid-friendly
-  // angles are used, so ctx.rotate() is never needed and block edges stay sharp.
-  const POSES = [
-    { step: [3, -3],   armDY: -4.5 },   // 0 wind-up
-    { step: [3, -1.5], armDY: -3   },   // 1 mid
-    { step: [3, 0],    armDY: 0    },   // 2 strike
-    { step: [3, -1],   armDY: -1.5 },   // 3 recoil
-  ];
-  const CYCLE = 1150;
 
   // 3x5 bitmap glyphs. The period is deliberately one column wide so "$33.47"
   // does not read with a gap in the middle.
@@ -150,6 +121,21 @@
   // For parts still expressed in the 48-unit reference space
   const part = (p, dy, fill) => rect(p.x + OX, p.y + OY + dy, p.w, p.h, fill);
 
+  // Half-unit grid snap. Every coordinate a swung tool produces goes through
+  // this, so an even S still puts each block on whole device pixels.
+  const snap = v => Math.round(v * 2) / 2;
+
+  // Lays 3-unit blocks along a line at 1.5-unit spacing. Stepping a full 3 units
+  // on a diagonal makes consecutive blocks meet at their corners only, which
+  // reads as a row of loose squares rather than a shaft; spacing them by half a
+  // block guarantees they overlap at every angle.
+  function blockLine(x0, y0, x1, y1, steps, fill, from = 1) {
+    for (let i = from; i <= steps; i++) {
+      const t = i / steps;
+      rect(snap(x0 + (x1 - x0) * t) - 1.5, snap(y0 + (y1 - y0) * t) - 1.5, 3, 3, fill);
+    }
+  }
+
   // ── Usage state ──────────────────────────────────────────
   // Secondary displays are handed CLAWD_STATIC by the host so they paint one
   // frame and then stop, instead of running a renderer per monitor at full tilt.
@@ -164,12 +150,18 @@
     const before = usage && typeof usage.cost === 'number' ? usage.cost : null;
     usage = next;
     if (before !== null && typeof next.cost === 'number' && next.cost > before + 1e-9) {
-      // Real money was spent since the last poll. Break the current ore open
-      // right now rather than waiting for the swing cycle to get there.
+      // Real money was spent since the last poll. Set the scene off right now
+      // rather than waiting for its cycle to come round.
       celebrateUntil = performance.now() + 1400;
-      shatter(performance.now());
+      scene.celebrate(performance.now());
     }
-    if (STATIC) draw(performance.now());
+    // A static display repaints only here, so this is also its only chance to
+    // move: without it the one surface most likely to show a near-identical
+    // image all night is the one getting no burn-in protection at all.
+    if (STATIC) {
+      updateDrift(performance.now());
+      draw(performance.now());
+    }
   };
 
   function amountGlyphs() {
@@ -177,7 +169,7 @@
     return '$--.--';
   }
   function amountColor(now) {
-    if (now < celebrateUntil) return GEM_L;   // brief flash when spend goes up
+    if (now < celebrateUntil) return scene.accent;   // flash when spend goes up
     if (!usage) return AMOUNT_D;
     if (usage.state === 'ok') return AMOUNT;
     // A refresh running over a figure we already have should not dim it every
@@ -186,16 +178,18 @@
     return AMOUNT_D;
   }
 
-  // ── Animation state ──────────────────────────────────────
+  // ── Shared animation ─────────────────────────────────────
   const reduced = STATIC || matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let pose = 0, prevPose = 0;
-  let crack = 0;
-  let rockAlive = true, respawnAt = 0, popAt = -1e9, joltUntil = 0;
   let blinkUntil = 0, nextBlink = 1500, doubled = false;
   const bits = [];
   let lastT = 0;
 
   function spawn(x, y, n, palette, spread, lift) {
+    // `stepBits` is the only thing that ever culls these, and it does not run
+    // when motion is off. Debris thrown on a path that never advances it would
+    // sit at its spawn point and accumulate for as long as the saver is up —
+    // invisible, since every piece lands on the same coordinate, and unbounded.
+    if (reduced) return;
     for (let i = 0; i < n; i++) {
       bits.push({
         x, y,
@@ -216,18 +210,11 @@
     }
   }
 
-  function shatter(now) {
-    rockAlive = false;
-    spawn(RX + 9, RY + 9, 22, [GEM, GEM_L, ROCK, ROCK_D], 26, 46);
-    respawnAt = now + 450;
-  }
-
-  function impact(now) {
-    if (!rockAlive) return;
-    joltUntil = now + 90;
-    crack++;
-    spawn(RX, 36 + DY, 8, [STEEL_L, GEM_L, ROCK], 24, 32);
-    if (crack >= 3) shatter(now);
+  function stepBlink(now) {
+    if (now <= nextBlink) return;
+    blinkUntil = now + 110;
+    if (!doubled && Math.random() < 0.22) { nextBlink = now + 320; doubled = true; }
+    else { nextBlink = now + 3000 + Math.random() * 3200; doubled = false; }
   }
 
   // ── Drawing ──────────────────────────────────────────────
@@ -295,23 +282,14 @@
     if (state !== 'ok' && state !== 'loading') rect(x + width + 3, y, 2, 2, AMOUNT_D);
   }
 
-  function drawRock(now) {
-    if (!rockAlive) return;
-    const jx = now < joltUntil ? 1 : 0;
-    if (now - popAt < 130) { rect(RX + 3 + jx, RY + 6, 12, 12, ROCK); return; }
-
-    for (let r = 0; r < 6; r++) {
-      for (let c = 0; c < 6; c++) {
-        rect(RX + c * CELL + jx, RY + r * CELL, CELL, CELL, ROCK_FILL[ROCK_MAP[r][c]]);
-      }
-    }
-    for (let s = 0; s < crack && s < CRACKS.length; s++) {
-      for (const [x, y, w, h] of CRACKS[s]) rect(RX + x + jx, RY + y, w, h, CRACK);
-    }
-  }
-
-  function drawClawd(bob, armDY, blinking) {
-    LEGS.forEach(l => part(l, 0, CORAL));               // legs stay planted
+  // Clawd himself is shared. Every scene puts him somewhere and hands him a
+  // different thing to do, but he is the reason this is Clawd Saver and not a
+  // generic counter, so his proportions do not vary.
+  //
+  // `standing` is off for scenes where he is not on his feet; those draw their
+  // own legs, because dangling ones are the only part that changes.
+  function drawClawd(bob, armDY, blinking, standing = true) {
+    if (standing) LEGS.forEach(l => part(l, 0, CORAL));
     part(ARM_L, bob, CORAL);
     part(ARM_R, bob + armDY, CORAL);
     part(BODY, bob, CORAL);
@@ -323,57 +301,431 @@
     rect(23 + DX, 9 + DY + bob, 10, 5, LAMP_BX);
     rect(25 + DX, 10 + DY + bob, 6, 3, LAMP);
 
-    // Eyes hold a fixed +1 unit gaze towards the ore rather than the cursor.
+    // Eyes hold a fixed +1 unit gaze towards whatever he is working on.
     EYES.forEach(e => {
       if (blinking) rect(e.x + OX + 1, e.y + OY + bob + 3, e.w, 1, EYE);
       else rect(e.x + OX + 1, e.y + OY + bob, e.w, e.h, EYE);
     });
   }
 
-  // Half-unit grid snap. Every coordinate the pickaxe produces goes through
-  // this, so an even S still puts each block on whole device pixels.
-  const snap = v => Math.round(v * 2) / 2;
+  // ── Scenes ───────────────────────────────────────────────
+  //
+  // A scene owns everything below the amount row: its own materials, its own
+  // prop, and what it does when the figure goes up. Everything above — the
+  // stage, the amount row, the drift, the particles and Clawd — is shared,
+  // because that is what makes them the same program rather than four.
+  //
+  // Three members and an optional fourth: `accent`, `celebrate(now)` and
+  // `draw(now, blinking)`, plus a `step(now, dt)` only for a scene with state to
+  // advance. Three rules:
+  //
+  //   `step` advances and draws nothing.
+  //   `draw` draws and advances nothing, and reads nothing but `now` and what
+  //     `celebrate` last set — so a frame drawn without a step before it is a
+  //     real frame rather than a stale one.
+  //   Every rectangle stays inside the stage at a drift of ±3 by ±2, unless it
+  //     is a backdrop that spans the whole stage at every drift.
+  //
+  // The second rule is the one that costs something to keep, and it is the one
+  // that earns it. A secondary display paints a single frame and then repaints
+  // only when the figure changes, and `prefers-reduced-motion` is honoured by
+  // never calling `step` at all. Anything cached in `step` is frozen on both
+  // paths — which is why poses are derived from `now` inside `draw` rather than
+  // stored, and why a scene says "gone until this moment" instead of "gone".
 
-  // Lays 3-unit blocks along a line at 1.5-unit spacing. Stepping a full 3 units
-  // on a diagonal makes consecutive blocks meet at their corners only, which
-  // reads as a row of loose squares rather than a shaft; spacing them by half a
-  // block guarantees they overlap at every angle.
-  function blockLine(x0, y0, x1, y1, steps, fill, from = 1) {
-    for (let i = from; i <= steps; i++) {
-      const t = i / steps;
-      rect(snap(x0 + (x1 - x0) * t) - 1.5, snap(y0 + (y1 - y0) * t) - 1.5, 3, 3, fill);
+  // Swinging, shared by the two scenes that hit something. One set of timings,
+  // because two would drift apart.
+  const SWING = [
+    { step: [3, -3],   armDY: -4.5 },   // 0 wind-up
+    { step: [3, -1.5], armDY: -3   },   // 1 mid
+    { step: [3, 0],    armDY: 0    },   // 2 strike
+    { step: [3, -1],   armDY: -1.5 },   // 3 recoil
+  ];
+  const SWING_CYCLE = 1150;
+  const swingPose = now => {
+    const ph = now % SWING_CYCLE;
+    return ph < 400 ? 0 : ph < 470 ? 1 : ph < 680 ? 2 : ph < 820 ? 3 : 0;
+  };
+  const swingBob = pose => (pose === 2 ? 1 : pose === 0 ? -1 : 0);
+
+  function makeMine() {
+    const ROCK   = '#6F6862';
+    const ROCK_D = '#57514B';
+    const GEM    = '#45A8A0';
+    const GEM_L  = '#86D6CF';
+    const CRACK  = '#17140F';
+
+    // Ore block. 6x6 cells of 3 units = 18x18.
+    const RX = 64 + DX, RY = 29 + DY, CELL = 3;
+    const ROCK_MAP = [
+      '001000',
+      '023010',
+      '122000',
+      '000123',
+      '012200',
+      '000100',
+    ];
+    const ROCK_FILL = { '0': ROCK, '1': ROCK_D, '2': GEM, '3': GEM_L };
+
+    const CRACKS = [
+      [[7.5, 0, 1.5, 4.5], [9, 4.5, 1.5, 3], [7.5, 7.5, 1.5, 3]],
+      [[9, 10.5, 1.5, 4.5], [3, 6, 4.5, 1.5], [10.5, 9, 4.5, 1.5], [4.5, 13.5, 1.5, 4.5]],
+    ];
+
+    // The ore is away for GONE after it breaks and pops back in over the POP
+    // that follows. Held as the moment it broke rather than as a flag, because
+    // only `step` could ever clear a flag — and a display that never steps would
+    // be left with Clawd swinging at bare ground for the rest of the night.
+    const GONE = 450, POP = 130;
+    let prevPose = 0, crack = 0, shatterAt = -1e9, joltUntil = 0;
+    const rockGone = now => now - shatterAt < GONE;
+
+    function shatter(now) {
+      // Idempotent: two rises inside the same 450 ms would otherwise throw two
+      // sets of debris and push the respawn further out each time.
+      if (rockGone(now)) return;
+      shatterAt = now;
+      crack = 0;
+      spawn(RX + 9, RY + 9, 22, [GEM, GEM_L, ROCK, ROCK_D], 26, 46);
     }
+
+    function impact(now) {
+      if (rockGone(now)) return;
+      joltUntil = now + 90;
+      crack++;
+      spawn(RX, 36 + DY, 8, [STEEL_L, GEM_L, ROCK], 24, 32);
+      if (crack >= 3) shatter(now);
+    }
+
+    function drawRock(now) {
+      if (rockGone(now)) return;
+      const jx = now < joltUntil ? 1 : 0;
+      if (now - shatterAt < GONE + POP) { rect(RX + 3 + jx, RY + 6, 12, 12, ROCK); return; }
+
+      for (let r = 0; r < 6; r++) {
+        for (let c = 0; c < 6; c++) {
+          rect(RX + c * CELL + jx, RY + r * CELL, CELL, CELL, ROCK_FILL[ROCK_MAP[r][c]]);
+        }
+      }
+      for (let s = 0; s < crack && s < CRACKS.length; s++) {
+        for (const [x, y, w, h] of CRACKS[s]) rect(RX + x + jx, RY + y, w, h, CRACK);
+      }
+    }
+
+    function drawPick(bob, p) {
+      const hx = 52 + DX, hy = 35 + DY + bob + p.armDY;
+      const [sx, sy] = p.step;
+      const cx = hx + sx * 4, cy = hy + sy * 4;
+
+      blockLine(hx, hy, cx, cy, 8, WOOD);
+
+      // The head is a short bar laid perpendicular to the handle, which is what
+      // makes it read as a pickaxe instead of a lump stuck on the end.
+      const len = Math.hypot(sx, sy);
+      const px = -sy / len * 3, py = sx / len * 3;
+      blockLine(cx - px, cy - py, cx + px, cy + py, 4, STEEL, 0);
+      rect(snap(cx + px) - 1.5, snap(cy + py) - 1.5, 3, 1.5, STEEL_L);
+    }
+
+    return {
+      accent: GEM_L,
+      celebrate: shatter,
+      // Only the strike edge needs remembering; the pose itself is the clock.
+      step(now) {
+        const pose = swingPose(now);
+        if (pose === 2 && prevPose !== 2) impact(now);
+        prevPose = pose;
+      },
+      draw(now, blinking) {
+        const pose = swingPose(now);
+        const p = SWING[pose];
+        const bob = swingBob(pose);
+        const lift = bob < 0 ? 2 : 0;
+
+        rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
+        if (!rockGone(now)) rect(RX + 1.5, BASE, 15, 1.5, SHADOW);
+
+        drawRock(now);
+        drawClawd(bob, p.armDY, blinking);
+        drawPick(bob, p);
+      },
+    };
   }
 
-  function drawPick(bob, p) {
-    const hx = 52 + DX, hy = 35 + DY + bob + p.armDY;
-    const [sx, sy] = p.step;
-    const cx = hx + sx * 4, cy = hy + sy * 4;
+  function makeForge() {
+    const IRON    = '#4A4340';
+    const IRON_L  = '#6B625C';
+    const IRON_D  = '#2E2A28';
+    const MOUTH   = '#140F0C';
+    const EMBER   = '#E2591B';
+    const FLAME   = '#F5952A';
+    const FLAME_L = '#FFD264';
+    const HOT     = '#FFF3C4';
+    const COAL    = '#241F1D';
 
-    blockLine(hx, hy, cx, cy, 8, WOOD);
+    // Furnace. The mouth is where every flame row has to stay, flare included.
+    const FX = 74, FY = 40, FW = 24, FH = 26;
+    const MX = 78, MY = 44, MW = 16, MH = 20;
+    const CENTRE = MX + MW / 2;
 
-    // The head is a short bar laid perpendicular to the handle, which is what
-    // makes it read as a pickaxe instead of a lump stuck on the end.
-    const len = Math.hypot(sx, sy);
-    const px = -sy / len * 3, py = sx / len * 3;
-    blockLine(cx - px, cy - py, cx + px, cy + py, 4, STEEL, 0);
-    rect(snap(cx + px) - 1.5, snap(cy + py) - 1.5, 3, 1.5, STEEL_L);
+    // Four rows of fire, widest at the bottom. Widths are even so each row
+    // stays centred on a whole unit.
+    const ROWS = [
+      { y: 58, h: 6, w: 14, c: EMBER },
+      { y: 53, h: 5, w: 10, c: FLAME },
+      { y: 49, h: 4, w: 8,  c: FLAME_L },
+      { y: 45, h: 4, w: 4,  c: HOT },
+    ];
+
+    let prevPose = 0, flareUntil = 0;
+
+    // Deterministic flicker. Random would look no better and would make the
+    // geometry check's replay meaningless.
+    const flick = (now, r) => (Math.floor(now / 90) + r * 3) % 3 - 1;
+
+    function drawFurnace(now) {
+      rect(FX, FY, FW, FH, IRON);
+      rect(FX - 2, FY - 3, FW + 4, 3, IRON_L);      // top lip
+      rect(83, FY - 10, 6, 7, IRON_D);              // chimney
+      rect(81, FY - 12, 10, 2, IRON_L);             // chimney cap
+      rect(MX, MY, MW, MH, MOUTH);
+
+      const flaring = now < flareUntil;
+      for (let r = 0; r < ROWS.length; r++) {
+        const row = ROWS[r];
+        // Clamped, because the widest row plus a flicker plus a flare is 18
+        // against a 16-unit mouth — two units of fire drawn over the iron. Every
+        // term is even, so the clamp cannot knock a row off its whole unit.
+        const w = Math.min(row.w + flick(now, r) * 2 + (flaring ? 2 : 0), MW);
+        const h = flaring && r === ROWS.length - 1 ? row.h + 2 : row.h;
+        const y = flaring && r === ROWS.length - 1 ? row.y - 1 : row.y;
+        rect(CENTRE - w / 2, y, w, h, row.c);
+      }
+      // Grate bars across the mouth, so the fire has something to sit on.
+      for (let i = 0; i < 3; i++) rect(MX + 2 + i * 5, MY + MH - 2, 2, 2, IRON_D);
+    }
+
+    function drawShovel(bob, p) {
+      const hx = 52 + DX, hy = 35 + DY + bob + p.armDY;
+      const [sx, sy] = p.step;
+      const cx = hx + sx * 4, cy = hy + sy * 4;
+
+      blockLine(hx, hy, cx, cy, 8, WOOD);
+
+      // A shovel is a pickaxe's opposite: the head is a flat pan on the end
+      // rather than a bar across it, so it is drawn along the handle, not
+      // perpendicular to it.
+      const len = Math.hypot(sx, sy);
+      const ux = sx / len, uy = sy / len;
+      blockLine(cx, cy, cx + ux * 3, cy + uy * 3, 3, STEEL, 0);
+      rect(snap(cx + ux * 3) - 2, snap(cy + uy * 3) - 1, 4, 2, STEEL_L);
+    }
+
+    return {
+      accent: FLAME_L,
+      celebrate(now) {
+        flareUntil = now + 1400;
+        spawn(CENTRE, MY + 4, 20, [EMBER, FLAME, FLAME_L, HOT], 20, 54);
+      },
+      step(now) {
+        const pose = swingPose(now);
+        // Each shovelful lands on the strike, throwing coal into the mouth and
+        // a few sparks back out.
+        if (pose === 2 && prevPose !== 2) spawn(CENTRE - 4, MY + 10, 6, [EMBER, FLAME, COAL], 16, 26);
+        prevPose = pose;
+      },
+      draw(now, blinking) {
+        const pose = swingPose(now);
+        const p = SWING[pose];
+        const bob = swingBob(pose);
+        const lift = bob < 0 ? 2 : 0;
+
+        rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
+        rect(FX + 1.5, BASE, FW - 3, 1.5, SHADOW);
+
+        drawFurnace(now);
+        rect(66, 63, 7, 3, COAL);        // the pile he is working from
+        drawClawd(bob, p.armDY, blinking);
+        drawShovel(bob, p);
+      },
+    };
   }
+
+  function makeRack() {
+    const CHASSIS   = '#23262B';
+    const CHASSIS_L = '#3A3F47';
+    const UNIT      = '#2C3138';
+    const SLOT      = '#171A1E';
+    const LED_G     = '#5BE07A';
+    const LED_A     = '#E8B54A';
+    const LED_OFF   = '#1B2025';
+    const FAN       = '#525A63';
+    const SCREEN    = '#7FD4C4';
+
+    const RKX = 74, RKY = 28, RKW = 26, RKH = 38;
+    const UNITS = [32, 38, 44, 50];        // top of each 5-unit-tall bay
+    const FAN_HUB = { x: 86, y: 60 };
+    // Two opposing blades per pose, stepped through four grid-friendly angles.
+    const BLADES = [
+      [[-4, -1], [2, -1]],
+      [[-3, -3], [1, 1]],
+      [[-1, -4], [-1, 2]],
+      [[1, -3], [-3, 1]],
+    ];
+
+    // The only thing this scene remembers. Everything else is the clock, which
+    // is why it needs no `step` at all.
+    let waveStart = -1e9;
+
+    // No random: a deterministic hash keeps the blink lively but replayable.
+    const lit = (u, i, phase) => ((((u * 7 + i * 13 + phase) * 2654435761) >>> 9) & 3) !== 0;
+
+    return {
+      accent: LED_G,
+      celebrate(now) {
+        waveStart = now;
+        spawn(RKX + RKW / 2, RKY + 2, 14, [LED_G, SCREEN, LED_A], 18, 40);
+      },
+      draw(now, blinking) {
+        // He is reading, not swinging: a slow shift of weight, nothing more.
+        const bob = Math.floor(now / 900) % 2 === 0 ? 0 : -1;
+        const lift = bob < 0 ? 2 : 0;
+        const since = now - waveStart;
+
+        rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
+        rect(RKX + 1.5, BASE, RKW - 3, 1.5, SHADOW);
+
+        rect(RKX, RKY, RKW, RKH, CHASSIS);
+        rect(RKX, RKY, RKW, 2, CHASSIS_L);
+        rect(RKX, RKY + RKH - 2, RKW, 2, CHASSIS_L);
+
+        const phase = Math.floor(now / 220);
+        UNITS.forEach((uy, u) => {
+          rect(77, uy, 20, 5, UNIT);
+          rect(92, uy + 1, 4, 3, SLOT);
+          // The wave sweeps bottom to top, so it reads as something rising
+          // through the machine rather than a row of lights blinking at once.
+          const washed = since >= 0 && since > (UNITS.length - 1 - u) * 90
+                                    && since < (UNITS.length - 1 - u) * 90 + 700;
+          for (let i = 0; i < 4; i++) {
+            const on = washed || lit(u, i, phase);
+            rect(79 + i * 3, uy + 1.5, 2, 2, on ? (i === 3 ? LED_A : LED_G) : LED_OFF);
+          }
+        });
+
+        // Fan bay. It runs faster while the wave is passing.
+        const fanPose = Math.floor(now / (since < 1400 ? 60 : 140)) % 4;
+        rect(77, 56, 20, 8, UNIT);
+        rect(FAN_HUB.x - 1, FAN_HUB.y - 1, 2, 2, CHASSIS_L);
+        for (const [bx, by] of BLADES[fanPose]) {
+          rect(FAN_HUB.x + bx, FAN_HUB.y + by, 2, 2, FAN);
+        }
+
+        drawClawd(bob, 0, blinking);
+        // A tablet in the near hand, angled at the rack.
+        rect(64, 48 + bob, 8, 11, CHASSIS_L);
+        rect(65, 49 + bob, 6, 8, SCREEN);
+      },
+    };
+  }
+
+  function makeDock() {
+    const WATER   = '#12304C';
+    const WATER_L = '#2A5C89';
+    const DOCK    = '#6B4A30';
+    const DOCK_L  = '#8B5E3C';
+    const DOCK_D  = '#402A19';
+    const MOON    = '#E8E4D0';
+    const STAR    = '#8E9AA8';
+    const LINE    = '#5A6472';
+    const FISH    = '#9FD8E8';
+
+    const TIP = { x: 88, y: 40 };
+    const STARS = [[70, 34], [78, 30], [92, 46], [106, 40], [72, 50]];
+
+    let dipUntil = 0, fishStart = -1e9;
+
+    return {
+      accent: MOON,
+      celebrate(now) {
+        dipUntil = now + 260;
+        fishStart = now + 200;
+        spawn(88, 62, 12, [WATER_L, FISH, MOON], 14, 34);
+      },
+      // No `step`, and deliberately no idle bob. He is sitting on a plank that
+      // cannot bob with him, so a body rising a unit lifts off it and shows a
+      // strip of decking underneath — the same seam the sitting pose exists to
+      // close. The water and the float carry the motion instead.
+      draw(now, blinking) {
+        // Sky first: the moon and a few stars, well clear of the amount row.
+        // Two overlapping rectangles rather than one, because a square moon
+        // reads as a window and a crescent at eight units reads as a broken L.
+        rect(97, 30, 6, 8, MOON);
+        rect(96, 31, 8, 6, MOON);
+        for (const [sx, sy] of STARS) rect(sx, sy, 1, 1, STAR);
+
+        // Full-bleed, and then some. A sea exactly as wide as the stage leaves
+        // a black wedge down one side and a black strip along the bottom as
+        // soon as burn-in drift moves it; the canvas clips the overhang for
+        // free. The highlights below stay inside the stage — a few units
+        // without dashes at the very edge is not something anyone can see.
+        rect(-4, 64, W + 8, H - 60, WATER);
+        const slide = Math.floor(now / 700);
+        for (let r = 0; r < 3; r++) {
+          const off = (slide + r * 4) % 6;
+          for (let x = 6; x <= 96; x += 12) rect(x + off, 65 + r * 3, 5, 1, WATER_L);
+        }
+
+        // Sitting is three things, and it stopped reading when any one was
+        // missing. The plank's top face ends at the body's bottom edge, so his
+        // own silhouette hides it and no strip of decking is left showing under
+        // him; the front face below it is what he is sitting on the edge of; and
+        // the posts carry the whole thing down past the waterline.
+        const hip = BODY.y + BODY.h + OY;   // 60
+        rect(4, hip - 3, 64, 3, DOCK);
+        rect(4, hip - 3, 64, 1, DOCK_L);
+        rect(4, hip, 64, 2, DOCK_D);
+        rect(12, hip + 2, 3, 8, DOCK_D);
+        rect(56, hip + 2, 3, 8, DOCK_D);
+
+        // The third thing: legs starting at that same bottom edge, at the
+        // standing legs' own x positions and widths. Started below the plank
+        // instead they are correctly occluded and still wrong — the band of
+        // decking left between body and leg reads as a character cut in half.
+        drawClawd(0, 0, blinking, false);
+        LEGS.forEach(l => rect(l.x + OX, hip, l.w, 10, CORAL));
+
+        blockLine(52 + DX, 35 + DY, TIP.x, TIP.y, 8, WOOD);
+
+        const floatY = now < dipUntil ? 67 : 64 + (Math.floor(now / 1100) % 2);
+        for (let y = TIP.y + 3; y < floatY; y += 2) rect(TIP.x, y, 1, 1, LINE);
+        rect(TIP.x - 1, floatY, 3, 3, CORAL);
+
+        // The catch arcs out of the water and back, once.
+        const p = (now - fishStart) / 1100;
+        if (p >= 0 && p <= 1) {
+          const fx = snap(88 - 14 * p);
+          const fy = snap(64 - 40 * p * (1 - p) * 2);
+          rect(fx, fy, 5, 3, FISH);
+          rect(fx + 5, fy + 0.5, 2, 2, FISH);
+        }
+      },
+    };
+  }
+
+  const SCENES = {
+    mine: makeMine(),
+    forge: makeForge(),
+    rack: makeRack(),
+    dock: makeDock(),
+  };
+  const scene = SCENES[window.CLAWD_SCENE] || SCENES.mine;
 
   function draw(now) {
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, W * S, H * S);
 
-    const p = POSES[pose];
-    const bob = pose === 2 ? 1 : (pose === 0 ? -1 : 0);
-    const lift = bob < 0 ? 2 : 0;
-
-    rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
-    if (rockAlive) rect(RX + 1.5, BASE, 15, 1.5, SHADOW);
-
-    drawRock(now);
-    drawClawd(bob, p.armDY, now < blinkUntil);
-    drawPick(bob, p);
+    scene.draw(now, now < blinkUntil);
 
     for (const b of bits) rect(Math.round(b.x * 2) / 2, Math.round(b.y * 2) / 2, 1.5, 1.5, b.c);
     drawAmount(now);
@@ -385,18 +737,10 @@
     updateDrift(now);
 
     if (!reduced) {
-      const ph = now % CYCLE;
-      pose = ph < 400 ? 0 : ph < 470 ? 1 : ph < 680 ? 2 : ph < 820 ? 3 : 0;
-      if (pose === 2 && prevPose !== 2) impact(now);
-      prevPose = pose;
-
-      if (!rockAlive && now >= respawnAt) { rockAlive = true; crack = 0; popAt = now; }
-
-      if (now > nextBlink) {
-        blinkUntil = now + 110;
-        if (!doubled && Math.random() < 0.22) { nextBlink = now + 320; doubled = true; }
-        else { nextBlink = now + 3000 + Math.random() * 3200; doubled = false; }
-      }
+      // Optional: a scene whose every moving part is a function of the clock
+      // has nothing to advance, and saying so is more honest than an empty one.
+      if (scene.step) scene.step(now, dt);
+      stepBlink(now);
       stepBits(dt);
     }
 

@@ -29,27 +29,26 @@
     user-select: none;
     cursor: default;
   }
-  h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  h2 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+  h2 + .sub { margin-bottom: 9px; }
   .sub { margin: 0; font-size: 12px; color: var(--dim); }
-  /* The window is a fixed size and cannot be resized, so if the rows ever grow
-     past it — a longer option name, a substituted font with taller metrics —
-     something has to give. A scrollbar here means it is the list rather than
-     the Save and Cancel buttons being pushed off the bottom.
-     The padding is not decoration: setting overflow on one axis makes the other
-     a scroll container too, which clips anything drawn outside the padding box —
-     including the focus ring. It has to clear the ring's whole extent, which is
-     outline-offset plus outline-width, not just the offset: 2 + 2 below. Three
-     would leave the outermost pixel clipped on every row. The negative margin
-     puts the rows back where they were. */
-  .options {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  /* Two groups no longer fit a fixed window at every font size, so the whole
+     form scrolls and the buttons stay put below it. */
+  .scroll {
     flex: 1;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     padding: 4px;
     margin: -4px;
   }
+  .scroll h2:not(:first-child) { margin-top: 15px; }
+  /* The scrolling happens one level up, on .scroll, so a group can be its own
+     natural height. The padding there is not decoration: setting overflow on
+     one axis makes the other a scroll container too, which clips anything drawn
+     outside the padding box — including the focus ring. It has to clear the
+     ring's whole extent, outline-offset plus outline-width, 2 + 2. */
+  .options { display: flex; flex-direction: column; gap: 8px; }
   .opt {
     display: flex;
     align-items: center;
@@ -92,10 +91,16 @@
 </style>
 </head>
 <body>
-  <h1>How much spend should the counter show?</h1>
-  <p class="sub">All of them end today. The calendar ones start over when the
-    period does; the rolling ones never reset.</p>
-  <div class="options" id="options"></div>
+  <div class="scroll">
+    <h2>How much spend should the counter show?</h2>
+    <p class="sub">All of them end today. The calendar ones start over when the
+      period does; the rolling ones never reset.</p>
+    <div class="options" id="periods"></div>
+
+    <h2>What should Clawd be doing?</h2>
+    <p class="sub">Random picks again every time the screensaver starts.</p>
+    <div class="options" id="scenes"></div>
+  </div>
   <div class="row">
     <button id="cancel" type="button">Cancel</button>
     <button id="save" type="button" class="primary">Save</button>
@@ -105,58 +110,85 @@
 (() => {
   'use strict';
 
-  // Keys must match Period::key() in settings.rs; the host round-trips them
-  // without interpreting them, so a mismatch here just means a saved choice the
-  // saver ignores.
-  const OPTIONS = [
+  // Keys must match Period::key() and SceneChoice::key() in settings.rs. The
+  // host round-trips them without interpreting them, so a mismatch here is an
+  // option the saver ignores — which config.rs has a test against.
+  const PERIODS = [
     { key: '1d',  name: 'Today',        note: 'today only'          },
     { key: 'wtd', name: 'This week',    note: 'since the week began' },
     { key: 'mtd', name: 'This month',   note: 'since the 1st'       },
     { key: '7d',  name: 'Last 7 days',  note: 'rolling'             },
     { key: '30d', name: 'Last 30 days', note: 'rolling'             },
   ];
+  const SCENES = [
+    { key: 'random', name: 'Surprise me',    note: 'a different one each start' },
+    { key: 'mine',   name: 'Mining',         note: 'pickaxe and ore'    },
+    { key: 'forge',  name: 'The forge',      note: 'watching it burn'   },
+    { key: 'rack',   name: 'Server rack',    note: 'what you pay for'   },
+    { key: 'dock',   name: 'Night fishing',  note: 'waiting on a bite'  },
+  ];
 
-  // The host injects the stored choice. Falling back to today matches what the
-  // saver does when settings.json is missing or unreadable, so the dialog can
-  // never show a selection the saver would not act on.
-  let selected = OPTIONS.some(o => o.key === window.CLAWD_PERIOD)
-    ? window.CLAWD_PERIOD
-    : '1d';
+  // One radio group, built from a list. Two of them now, and the second is the
+  // reason this is a function rather than a run of statements.
+  function group(hostId, options, stored, fallback) {
+    let selected = options.some(o => o.key === stored) ? stored : fallback;
+    const host = document.getElementById(hostId);
+    host.setAttribute('role', 'radiogroup');
 
-  const list = document.getElementById('options');
-  const rows = OPTIONS.map((opt, i) => {
-    const el = document.createElement('div');
-    el.className = 'opt';
-    el.tabIndex = 0;
-    el.setAttribute('role', 'radio');
-    el.innerHTML =
-      '<span class="dot"></span><span class="name"></span><span class="note"></span>';
-    el.querySelector('.name').textContent = opt.name;
-    el.querySelector('.note').textContent = opt.note;
-    el.addEventListener('click', () => select(i));
-    list.appendChild(el);
-    return el;
-  });
-  list.setAttribute('role', 'radiogroup');
-
-  function select(i) {
-    selected = OPTIONS[i].key;
-    paint();
-    rows[i].focus();
-  }
-
-  function paint() {
-    OPTIONS.forEach((opt, i) => {
-      const on = opt.key === selected;
-      rows[i].classList.toggle('sel', on);
-      rows[i].setAttribute('aria-checked', String(on));
+    const rows = options.map((opt, i) => {
+      const el = document.createElement('div');
+      el.className = 'opt';
+      el.tabIndex = 0;
+      el.setAttribute('role', 'radio');
+      el.innerHTML =
+        '<span class="dot"></span><span class="name"></span><span class="note"></span>';
+      el.querySelector('.name').textContent = opt.name;
+      el.querySelector('.note').textContent = opt.note;
+      el.addEventListener('click', () => api.select(i));
+      host.appendChild(el);
+      return el;
     });
+
+    const api = {
+      rows,
+      key: () => selected,
+      select(i) {
+        selected = options[i].key;
+        api.paint();
+        rows[i].focus();
+      },
+      paint() {
+        options.forEach((opt, i) => {
+          const on = opt.key === selected;
+          rows[i].classList.toggle('sel', on);
+          rows[i].setAttribute('aria-checked', String(on));
+        });
+      },
+      focusSelected() { rows[options.findIndex(o => o.key === selected)].focus(); },
+      step(target, by) {
+        const at = rows.indexOf(target);
+        const from = at >= 0 ? at : options.findIndex(o => o.key === selected);
+        api.select((from + by + options.length) % options.length);
+      },
+    };
+    api.paint();
+    return api;
   }
+
+  // The host injects the stored choices. Falling back the same way the saver
+  // does when settings.json is missing means the dialog can never show a
+  // selection the saver would not act on.
+  const periods = group('periods', PERIODS, window.CLAWD_PERIOD, '1d');
+  const scenes = group('scenes', SCENES, window.CLAWD_SCENE, 'mine');
+  const groups = [periods, scenes];
+  const owner = target => groups.find(g => g.rows.indexOf(target) >= 0);
 
   // Opened straight in a browser there is no host to talk to. Guarding here
   // keeps the page inspectable without it throwing on every click.
   const send = msg => { if (window.ipc) window.ipc.postMessage(msg); };
-  const commit = () => send('save:' + selected);
+  // JSON rather than a delimiter, because there are two fields now and there
+  // may one day be three.
+  const commit = () => send('save:' + JSON.stringify({ period: periods.key(), scene: scenes.key() }));
   const dismiss = () => send('close');
 
   document.getElementById('save').addEventListener('click', commit);
@@ -177,17 +209,17 @@
     const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
     if (!step) return;
     // Same carve-out as Enter, for the same reason. An arrow pressed while Save
-    // or Cancel has focus would otherwise pull focus back into the list and
+    // or Cancel has focus would otherwise pull focus back into a list and
     // change the selection on the way — quietly altering what a subsequent
     // Enter would store.
     if (e.target && e.target.tagName === 'BUTTON') return;
+    // Arrows move within whichever group holds focus, so the two never fight
+    // over one keypress. With focus nowhere in particular, the periods lead.
     e.preventDefault();
-    const at = OPTIONS.findIndex(o => o.key === selected);
-    select((at + step + OPTIONS.length) % OPTIONS.length);
+    (owner(e.target) || periods).step(e.target, step);
   });
 
-  paint();
-  rows[OPTIONS.findIndex(o => o.key === selected)].focus();
+  periods.focusSelected();
 })();
 </script>
 </body>

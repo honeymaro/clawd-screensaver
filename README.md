@@ -1,6 +1,7 @@
 # Clawd Saver
 
-A Windows screensaver that shows your Claude Code spend while Clawd mines for it.
+A Windows screensaver that shows your Claude Code spend while Clawd earns it —
+at the ore face, at a furnace, minding a rack, or fishing off a jetty at night.
 
 ![Clawd swings a pickaxe into an ore block while today's spend is shown above him](docs/demo.gif)
 
@@ -35,8 +36,8 @@ if you want it in the list.
 
 ## Settings
 
-One choice: how far back the counter reaches. **Right-click the `.scr` and pick
-Configure**, or from a prompt:
+Two choices: how far back the counter reaches, and what Clawd is doing while it
+counts. **Right-click the `.scr` and pick Configure**, or from a prompt:
 
 ```powershell
 Start-Process "$env:LOCALAPPDATA\clawd-saver\clawd-saver.scr" -Verb config
@@ -47,6 +48,8 @@ Not `& "...clawd-saver.scr" /c`, which looks right and is not: Windows hands
 `scrfile`'s `open` verb is `"%1" /S` — so the switch is dropped and the
 screensaver starts instead. The `config` verb runs the file with no arguments at
 all, which is why a bare invocation has to mean the settings dialog.
+
+### How much
 
 | Option | Window | Resets |
 |---|---|---|
@@ -65,9 +68,28 @@ Which day a week starts on comes from the Windows locale rather than a guess —
 Sunday here, Monday across most of Europe. So on its own first day, **This week**
 shows exactly what **Today** shows.
 
-The choice lands in `%LOCALAPPDATA%\clawd-saver\settings.json`. Delete it, or
-write something it cannot parse, and the counter falls back to today rather than
-refusing to start.
+### What Clawd is doing
+
+| Option | What you see | When the figure goes up |
+|---|---|---|
+| Mining | a pickaxe swung into an ore block | the ore shatters and respawns |
+| The forge | coal shovelled into a furnace | the fire flares |
+| Server rack | a tablet held beside a rack of blinking drives | a wave of green runs up the bays |
+| Night fishing | a jetty, a moon, and a line in the water | something takes the bait |
+| Surprise me | one of the four, rolled again at every start | — |
+
+Each scene tints the counter with its own colour for that moment — gem for the
+mine, ember for the forge, a terminal green for the rack, moonlight for the
+jetty — so a rise reads differently depending on what is on screen.
+
+**Surprise me** is rolled once per launch and shared, not rolled per display: a
+multi-monitor setup shows the same scene on every screen rather than four
+different ones.
+
+Both choices land in `%LOCALAPPDATA%\clawd-saver\settings.json`. Delete it, or
+write something it cannot parse, and it falls back to today's spend and the mine
+rather than refusing to start. Each field falls back on its own, so a file
+written before the scenes existed still selects its period.
 
 The dropdown's own Settings button has the same `System32` problem as the list
 above, which is why the command is spelled out here.
@@ -77,7 +99,7 @@ above, which is why the command is spelled out here.
 Rust + [`tao`](https://crates.io/crates/tao) + [`wry`](https://crates.io/crates/wry) —
 the window and webview crates that Tauri is built on, used directly without the
 Tauri framework, CLI, bundler, or IPC layer. WebView2 ships with Windows 11, so
-nothing is bundled. The release binary is **663 KB**, both pages included.
+nothing is bundled. The release binary is **about 680 KB**, both pages included.
 
 Both pages are embedded with `include_str!`, so the `.scr` is a single
 self-contained file.
@@ -90,7 +112,7 @@ their own profile of the same cached page, 70 MB and 74 MB. `install.ps1` delete
 the old `*.WebView2` folders if it finds them.
 
 That profile is where the install's size actually goes: about 72 MB of it
-against 4 MB of ccusage and 663 KB of screensaver, ~77 MB in total. None of it
+against 4 MB of ccusage and 680 KB of screensaver, ~77 MB in total. None of it
 is written by this program — half is components the WebView2 runtime fetches for
 itself and a page of coloured rectangles will never use, Widevine DRM and a
 subresource filter list among them. `-Uninstall` takes it with the rest.
@@ -209,20 +231,26 @@ about 1.5× machine-wide. The workings are in
 ### When the counter will not fill in
 
 A screensaver has no console, so `%LOCALAPPDATA%\clawd-saver\log.txt` is the only
-place to see what happened. One line per session and per fetch — real lines,
-gathered onto one day to show every shape in one place:
+place to see what happened. One line per session and per fetch — real lines, with
+one failure from an earlier day pulled in so every shape is in one place:
 
 ```
-2026-08-09 09:36:48  saver start   1 display(s), 1d, seed=none
-2026-08-09 09:36:51  fetch ok         2.5s  via pnpx   1d  $163.78
 2026-08-09 09:37:04  fetch FAILED     0.9s  20260809..20260809
     ccusage: exit code: 1 - 'ccusage' is not recognized ... | pnpx: ...
     PATH=C:\Windows\System32
-2026-08-09 17:20:31  settings      period=mtd
-2026-08-09 17:22:04  saver start   1 display(s), mtd, seed=none
-2026-08-09 17:22:04  fetch ok         1.3s  via local  mtd  $1788.83   [detached]
-2026-08-09 17:22:05  fetch ok         1.3s  via local  mtd  $1788.83
+2026-08-11 19:34:48  fetch ok         1.9s  via local   1d  $550.72   [detached]
+2026-08-11 19:34:48  saver start   1 display(s), 1d, mine, seed=$541.59 cached
+2026-08-11 19:34:50  fetch ok         1.8s  via local   1d  $552.39
+2026-08-11 19:35:05  settings      period=1d scene=random
+2026-08-11 19:35:11  saver start   1 display(s), 1d, mine, seed=$552.39 cached
+2026-08-11 19:35:17  saver start   1 display(s), 1d, rack, seed=$552.49 cached
+2026-08-11 19:35:28  saver start   1 display(s), 1d, forge, seed=$552.59 cached
 ```
+
+The scene sits between the period and the seed, and it is the resolved one. Those
+last three lines are what **Surprise me** looks like from outside: one `settings`
+line saying `scene=random`, and then a different scene named at every launch.
+Nothing else records what was on screen.
 
 A `[detached]` tag means the refresher, not the poller — that is how a ccusage
 running with nothing on screen is accounted for.
@@ -260,6 +288,7 @@ Development switches:
 | Flag | Effect |
 |---|---|
 | `--windowed` | Ordinary 1280×800 window instead of taking over every display |
+| `--scene <name>` | Draw `mine`, `forge`, `rack`, `dock` or `random` for this run only, without touching what is stored. Case-insensitive. An unrecognised name leaves the stored scene alone and says so on stderr, rather than quietly drawing one nobody asked for. |
 | `--exit-after <ms>` | Quit on a timer, for unattended checks |
 | `--ignore-input` | Do not wire up the input exit, so a screenshot can be taken |
 | `--diag` | Have the page report viewport metrics over IPC |
@@ -268,6 +297,7 @@ Development switches:
 ```powershell
 cd saver
 cargo run -- --windowed
+cargo run -- --windowed --scene dock
 cargo run -- --print-usage
 ```
 
@@ -275,6 +305,14 @@ Pass these to the **`.exe`**, never to the installed `.scr`. Arguments written o
 the command line of a `.scr` are discarded — see Settings above — so
 `& "...clawd-saver.scr" --windowed --exit-after 5000` does not open a window with
 a timer, it starts a full-screen screensaver with no way out but the mouse.
+
+Dismiss the real screensaver first, too. Launched while an installed copy was
+already up, the dev build created its window, never got a WebView2 process, and
+sat there — past `--exit-after`, which is armed after the surfaces are built and
+so cannot rescue a hang inside one. Both share a WebView2 profile, which is the
+obvious suspect and has not been pinned down; it has been seen once, and eight
+launches with nothing else running were all up inside two seconds. Windows will
+not start a second screensaver on its own, so this is a development-only trap.
 
 ## Rendering notes
 
@@ -285,6 +323,24 @@ units wide and half-units still have to land on whole pixels.
 All motion is quantised to whole units. Sub-pixel movement would smear the block
 edges the character is made of. The pickaxe swing is four discrete poses rather
 than a rotation, for the same reason — `ctx.rotate()` would destroy the grid.
+
+Clawd himself, the counter, the palette, the particles and the drift are shared;
+a scene is only what sits beside him. Each one is a small object in `ui.html`'s
+`SCENES` registry with an `accent` colour, a `celebrate(now)` for the moment the
+figure rises, a `draw(now, blinking)` that draws and advances nothing, and — only
+if it has state worth advancing — a `step(now, dt)` that advances and draws
+nothing. Two of the four have no `step` at all.
+
+That split is not tidiness. A secondary display paints one frame and then
+repaints only when the figure changes, and `prefers-reduced-motion` is honoured
+by never stepping, so anything a scene caches in `step` is frozen on both paths.
+Poses are therefore derived from `now` inside `draw` — the flame flicker, the
+drive LEDs, the swing — and a scene says "gone until this moment" rather than
+"gone", so it recovers without being stepped.
+
+The same property is what makes `checks/verify-scenes.js` possible: a frame
+rendered at any instant is a real frame. The rest of the reasoning is in
+[docs/2026-08-11-four-scenes.md](docs/2026-08-11-four-scenes.md).
 
 Diagonals need care. Stepping a 3-unit block by a full 3 units along a diagonal
 makes consecutive blocks meet at their corners only, and the result reads as a
@@ -307,6 +363,7 @@ double-counts the scale factor and overflows the screen.
 
 ```powershell
 node checks/verify-ui.js        # every rect, 4 poses x 5 drift offsets, in bounds
+node checks/verify-scenes.js    # the same, for every scene in the registry
 node checks/smoke-ui.js         # executes ui.html against a stubbed DOM
 node checks/smoke-settings.js   # drives settings.html and asserts what it posts
 cd saver; cargo test            # date windows, cache keys, backoff, IPC messages
@@ -315,6 +372,25 @@ cd saver; cargo test            # date windows, cache keys, backoff, IPC message
 `verify-ui.js` mirrors the layout constants from `ui.html`; if you move the scene,
 update both. It refuses to run if a constant it mirrors has changed on one side
 only.
+
+`verify-scenes.js` takes the other approach: it reads the registry out of
+`ui.html` and drives the real page, so a scene added later is checked without
+anyone remembering to add it here. Every rect has to land on whole device pixels
+and stay inside the stage at all five drift offsets, every frame has to open with
+the background clear, every particle has to stay inside the envelope `stepBits`
+culls against, and no two registry entries may draw the same thing.
+
+Two things it deliberately allows. A **backdrop** may overhang the stage, but
+only if it still covers the whole width and reaches the bottom while doing it —
+which is what a sea has to do, and what a misplaced prop cannot fake. And
+particles are identified by being exactly 1.5 units square, so scenery that
+happens to be that size inherits their looser bounds; that hole is known and not
+worth closing with a tag in the page.
+
+What it cannot see at all is a registry key that stops matching `Scene::key()`,
+because it takes its scene list from that same registry. `cargo test` covers that
+side: `saver.rs` scrapes the registry out of the embedded page and asserts one
+entry per scene the settings can select.
 
 The amount row shrinks rather than overflowing. A 30-day total is the string that
 can get long — this machine sits around $6,400 for thirty days, so roughly 60%

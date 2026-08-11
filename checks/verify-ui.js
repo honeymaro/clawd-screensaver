@@ -38,7 +38,7 @@ function assertMirrorsUi(font, poses) {
       throw new Error(`ui.html changed: "${line}" is gone — update verify-ui.js to match`);
     }
   }
-  for (const [name, mine] of [['FONT', font], ['POSES', poses]]) {
+  for (const [name, mine] of [['FONT', font], ['SWING', poses]]) {
     const theirs = literalFromUi(name, name === 'FONT' ? '{' : '[', name === 'FONT' ? '}' : ']');
     if (JSON.stringify(theirs) !== JSON.stringify(mine)) {
       throw new Error(`${name} differs between ui.html and verify-ui.js:\n  ui.html: ${JSON.stringify(theirs)}\n  here:    ${JSON.stringify(mine)}`);
@@ -52,6 +52,8 @@ const RX = 64 + DX, RY = 29 + DY;
 const AMOUNT_MAX_W = 96;
 const S = 14; // even, as resize() guarantees
 
+// `SWING` in ui.html, shared there by the mine and the forge. The poses are the
+// mine's, which is the scene this file re-derives.
 const POSES = [
   { step: [3, -3], armDY: -4.5 },
   { step: [3, -1.5], armDY: -3 },
@@ -201,3 +203,6 @@ console.log(`amount widths: ` + ['$--.--','$33.47','$1234.56','$12345.67','$1234
   .map(t => `${t}=${textWidth(t, amountScale(t))}@x${amountScale(t)}`).join('  '));
 console.log(problems.length ? `PROBLEMS (${problems.length}):\n` + problems.slice(0, 25).join('\n')
                             : 'ALL RECTS PIXEL-ALIGNED AND IN BOUNDS (4 poses x 5 drift offsets)');
+// Without this the one check that predates the others is the one that cannot
+// fail a script: it printed its complaints and exited 0 like everything was well.
+process.exit(problems.length ? 1 : 0);

@@ -16,8 +16,8 @@
   in System32, so this one will not appear in that list. It still runs on idle -
   Windows reads the path from the registry, not from the dropdown. Use -System
   (from an elevated prompt) if you want it listed. The dropdown's Settings button
-  is out of reach for the same reason, so to choose whether the counter shows
-  today, this week, this month, the last 7 days or the last 30 days: right-click
+  is out of reach for the same reason, so to choose how far back the counter
+  reaches and what Clawd is doing while it counts: right-click
   the .scr and pick Configure, or run
   Start-Process <path> -Verb config. Neither a double-click nor /c on the command
   line will do it - both start the screensaver instead, because .scr files go
@@ -287,5 +287,7 @@ Write-Host 'Try it now:   Start-Process "' -NoNewline; Write-Host $installScr -N
 Write-Host '              Move the mouse or press a key to dismiss it.'
 Write-Host 'Settings:     Start-Process "' -NoNewline; Write-Host $installScr -NoNewline; Write-Host '" -Verb config'
 Write-Host '              (or right-click the .scr and pick Configure)'
-Write-Host '              today, this week, this month, last 7 days or last 30 days'
+Write-Host '              how much: today, this week, this month, last 7 or last 30 days'
+Write-Host '              what Clawd is doing: mining, the forge, a server rack,'
+Write-Host '              night fishing, or a different one at every start'
 Write-Host 'Remove with:  .\install.ps1 -Uninstall'

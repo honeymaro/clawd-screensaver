@@ -10,7 +10,11 @@ use tao::{
 };
 use wry::{WebView, WebViewBuilder, http::Request};
 
-use crate::{Opts, settings::Period, usage};
+use crate::{
+    Opts,
+    settings::{Period, Scene},
+    usage,
+};
 
 const UI: &str = include_str!("ui.html");
 
@@ -77,7 +81,7 @@ setTimeout(function () {
 /// Matches the page background so there is no white flash before first paint.
 const BG: wry::RGBA = (26, 24, 22, 255);
 
-pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
+pub fn run(opts: &Opts, period: Period, scene: Scene) -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -100,9 +104,7 @@ pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
             WindowBuilder::new()
                 .with_title("Clawd Saver")
                 .with_inner_size(LogicalSize::new(1280.0, 800.0)),
-            true,
-            opts,
-            &seed,
+            Page { animated: true, opts, seed: &seed, scene },
             &proxy,
             &event_loop,
             &mut web_context,
@@ -118,9 +120,7 @@ pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
                 .with_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
             let (window, webview) = build_surface(
                 builder,
-                is_primary,
-                opts,
-                &seed,
+                Page { animated: is_primary, opts, seed: &seed, scene },
                 &proxy,
                 &event_loop,
                 &mut web_context,
@@ -139,9 +139,10 @@ pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
     // questions that have cost the most time: did the saver start at all, and
     // did it have a same-day figure to show before the first fetch landed.
     usage::log(&format!(
-        "saver start   {} display(s), {}, seed={}",
+        "saver start   {} display(s), {}, {}, seed={}",
         surfaces.len(),
         period.key(),
+        scene.key(),
         match seed.cost {
             Some(c) => format!("${c:.2} cached"),
             None => "none".into(),
@@ -206,20 +207,52 @@ pub fn run(opts: &Opts, period: Period) -> wry::Result<()> {
     });
 }
 
+/// Everything a surface's page needs that is not the window itself.
+struct Page<'a> {
+    /// Off for secondary displays, which paint one frame and stop.
+    animated: bool,
+    opts: &'a Opts,
+    seed: &'a usage::Usage,
+    scene: Scene,
+}
+
+/// The two values every surface's page is handed before it runs.
+///
+/// The scene arrives already resolved, and the same one goes to every display. A
+/// page that rolled its own would put a different scene on each monitor of a
+/// multi-head setup.
+///
+/// Split out from `build_surface` so a test can read it. Both halves of this are
+/// a contract with `ui.html` that nothing else enforces: the page looks the
+/// scene up in a registry and quietly falls back to the mine for a name it does
+/// not know, so a key or a global renamed on one side only is not an error
+/// anybody sees — it is the wrong scene, with the log still naming the right one.
+fn globals(seed: &usage::Usage, scene: Scene) -> String {
+    format!(
+        "window.CLAWD_SEED = {};window.CLAWD_SCENE = {};",
+        seed.to_json(),
+        serde_json::Value::from(scene.key())
+    )
+}
+
 fn build_surface(
     builder: WindowBuilder,
-    animated: bool,
-    opts: &Opts,
-    seed: &usage::Usage,
+    page: Page,
     proxy: &EventLoopProxy<UserEvent>,
     target: &EventLoop<UserEvent>,
     web_context: &mut wry::WebContext,
 ) -> wry::Result<(Window, WebView)> {
+    let Page {
+        animated,
+        opts,
+        seed,
+        scene,
+    } = page;
     let window = builder.build(target).unwrap();
 
     // wry replaces the init script rather than appending, so the pieces are
     // concatenated up front.
-    let mut init = format!("window.CLAWD_SEED = {};", seed.to_json());
+    let mut init = globals(seed, scene);
     if !animated {
         init.push_str(STATIC_FLAG);
     }
@@ -246,4 +279,73 @@ fn build_surface(
         .build(&window)?;
 
     Ok((window, webview))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The keys `ui.html`'s scene registry is indexed by, scraped from the page.
+    ///
+    /// `checks/verify-scenes.js` cannot do this job. It takes its scene list
+    /// from that same registry, so it agrees with the page by construction on
+    /// exactly the name that has to match here. The page is compiled into this
+    /// binary, so this side can consult the real thing.
+    fn registry_keys() -> Vec<&'static str> {
+        let at = UI
+            .find("const SCENES = {")
+            .expect("ui.html no longer declares a SCENES registry");
+        let open = at + UI[at..].find('{').expect("no opening brace");
+        let mut depth = 0usize;
+        let end = UI[open..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0 && c == '}').then_some(open + i)
+            })
+            .expect("ui.html's SCENES registry is unterminated");
+
+        UI[open + 1..end]
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(key, _)| key.trim())
+            .filter(|key| !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase()))
+            .collect()
+    }
+
+    #[test]
+    fn every_scene_the_host_can_pick_is_one_the_page_can_draw() {
+        let keys = registry_keys();
+        for scene in Scene::ALL {
+            assert!(
+                keys.contains(&scene.key()),
+                "ui.html draws no scene {:?}; its registry offers {keys:?}",
+                scene.key()
+            );
+        }
+        // And the other direction: a scene in the page that no setting can
+        // reach is dead weight nobody would find.
+        assert_eq!(keys.len(), Scene::ALL.len(), "ui.html offers {keys:?}");
+    }
+
+    #[test]
+    fn the_page_reads_the_globals_this_file_writes() {
+        let seed = usage::Usage {
+            cost: Some(12.34),
+            freshness: usage::Freshness::Fresh,
+        };
+        for js in [globals(&seed, Scene::Mine), STATIC_FLAG.to_string()] {
+            for name in js.split("window.").skip(1) {
+                let name = name.split([' ', '=', ';']).next().unwrap();
+                assert!(
+                    UI.contains(&format!("window.{name}")),
+                    "this file sets window.{name}, which ui.html never reads"
+                );
+            }
+        }
+    }
 }

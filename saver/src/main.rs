@@ -39,6 +39,14 @@ pub struct Opts {
     /// Not a dev switch: how the detached child launched by a running saver
     /// identifies itself. It refreshes the cache and exits, opening no window.
     pub refresh_cache: bool,
+    /// Dev switch: draw this scene instead of the stored one, so each can be
+    /// looked at without changing what is saved.
+    pub scene: Option<settings::SceneChoice>,
+}
+
+/// The argument after a switch, unless that is itself a switch.
+fn value(args: &[String], at: usize) -> Option<&String> {
+    args.get(at + 1).filter(|v| !v.starts_with(['-', '/']))
 }
 
 fn parse_args() -> Opts {
@@ -56,6 +64,7 @@ fn parse_args() -> Opts {
     let mut diag = false;
     let mut print_usage = false;
     let mut refresh_cache = false;
+    let mut scene = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -74,9 +83,30 @@ fn parse_args() -> Opts {
                 "--diag" => diag = true,
                 "--print-usage" => print_usage = true,
                 "--refresh-cache" => refresh_cache = true,
+                // Both of these take a value, and both consume the next
+                // argument only when it is one. Consuming it unconditionally
+                // meant `--scene --windowed` swallowed the flag behind it — so a
+                // typo did not merely lose the scene, it lost the mode: `mode`
+                // stayed at its Config default and the settings dialog opened
+                // instead of a saver.
                 "--exit-after" => {
-                    exit_after_ms = args.get(i + 1).and_then(|v| v.parse().ok());
-                    i += 1;
+                    if let Some(v) = value(&args, i) {
+                        exit_after_ms = v.parse().ok();
+                        i += 1;
+                    }
+                }
+                "--scene" => {
+                    if let Some(v) = value(&args, i) {
+                        // An unrecognised name leaves the stored scene alone
+                        // rather than defaulting to one — but says so, because
+                        // quietly drawing a scene nobody asked for is the
+                        // failure this is trying to avoid.
+                        scene = settings::SceneChoice::from_key(&v.to_ascii_lowercase());
+                        if scene.is_none() {
+                            eprintln!("[saver] --scene {v}: unknown, using the stored scene");
+                        }
+                        i += 1;
+                    }
                 }
                 _ => {}
             },
@@ -92,6 +122,7 @@ fn parse_args() -> Opts {
         diag,
         print_usage,
         refresh_cache,
+        scene,
     }
 }
 
@@ -139,14 +170,22 @@ fn main() {
             // refresher and the poller from clobbering each other — the
             // detached child re-reads the setting for itself, and what makes
             // that safe is one cache file per period.
-            let period = settings::load();
+            let chosen = settings::load();
+            let period = chosen.period;
+            // Rolled here rather than in the page, and once rather than per
+            // display: `Random` has to land on the same scene for every monitor,
+            // and the log has to be able to say which one ran.
+            let scene = opts
+                .scene
+                .unwrap_or(chosen.scene)
+                .resolve();
             // Started before the window exists, for both of its reasons: the
             // fetch is already in flight while WebView2 spins up, and it keeps
             // going if this saver is dismissed a second from now — which is the
             // common case on a machine someone is actually using, and the reason
             // the cached figure used to freeze for hours.
             usage::spawn_detached_refresh(period);
-            if let Err(e) = saver::run(&opts, period) {
+            if let Err(e) = saver::run(&opts, period, scene) {
                 message_box("Clawd Saver", &format!("Failed to start:\n\n{e}"));
             }
         }

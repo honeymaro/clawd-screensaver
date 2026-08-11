@@ -1,5 +1,5 @@
-//! The one thing Clawd Saver lets you choose: how much history the counter adds
-//! up.
+//! What Clawd Saver lets you choose: how much history the counter adds up, and
+//! what Clawd is doing while it does.
 //!
 //! Stored in `%LOCALAPPDATA%\clawd-saver\settings.json`, beside the cache and
 //! the log rather than in the registry, so everything the program owns sits in
@@ -61,56 +61,180 @@ impl Period {
     }
 }
 
+/// Which scene the page draws below the counter.
+///
+/// Each one is Clawd doing something that costs money: swinging at ore, feeding
+/// a furnace, minding a rack of servers, or waiting on a jetty for something to
+/// bite. The keys are what `ui.html`'s scene registry is indexed by, so they are
+/// a contract with the page, not just a storage format.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Scene {
+    Mine,
+    Forge,
+    Rack,
+    Dock,
+}
+
+impl Scene {
+    pub const ALL: [Scene; 4] = [Scene::Mine, Scene::Forge, Scene::Rack, Scene::Dock];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Scene::Mine => "mine",
+            Scene::Forge => "forge",
+            Scene::Rack => "rack",
+            Scene::Dock => "dock",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key() == key)
+    }
+}
+
+/// What was chosen, which is not always a scene: `Random` is resolved once per
+/// launch rather than stored, so the answer differs each time the saver starts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SceneChoice {
+    Random,
+    One(Scene),
+}
+
+impl SceneChoice {
+    pub const ALL: [SceneChoice; 5] = [
+        SceneChoice::Random,
+        SceneChoice::One(Scene::Mine),
+        SceneChoice::One(Scene::Forge),
+        SceneChoice::One(Scene::Rack),
+        SceneChoice::One(Scene::Dock),
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            SceneChoice::Random => "random",
+            SceneChoice::One(s) => s.key(),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    /// Turn a choice into the scene this launch will actually draw.
+    ///
+    /// Must be called exactly once per launch and the result shared, not called
+    /// per display: the saver builds one surface per monitor, and a fresh roll
+    /// for each would put a different scene on every screen.
+    pub fn resolve(self) -> Scene {
+        match self {
+            SceneChoice::One(s) => s,
+            // A `RandomState` is seeded by the OS and then bumped per use, so
+            // hashing nothing with a fresh one is a different number every
+            // time. Enough for picking one of four, and it costs no dependency
+            // and no stored seed.
+            SceneChoice::Random => {
+                use std::hash::{BuildHasher, Hasher};
+                let n = std::collections::hash_map::RandomState::new()
+                    .build_hasher()
+                    .finish();
+                Scene::ALL[(n % Scene::ALL.len() as u64) as usize]
+            }
+        }
+    }
+}
+
+/// Everything the dialog can set, read and written as one record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Settings {
+    pub period: Period,
+    pub scene: SceneChoice,
+}
+
+impl Default for Settings {
+    /// What the saver did before there was anything to choose: today's spend,
+    /// Clawd at the ore. An install that upgrades and never opens the dialog
+    /// behaves exactly as it did.
+    fn default() -> Self {
+        Settings {
+            period: Period::Today,
+            scene: SceneChoice::One(Scene::Mine),
+        }
+    }
+}
+
 fn path() -> Option<PathBuf> {
     crate::usage::app_dir().map(|d| d.join("settings.json"))
 }
 
-/// Today when the file is absent, unreadable or not understood. A settings file
-/// that has gone bad should leave the counter working rather than blank, and
-/// today is what the saver did before the setting existed.
+/// Defaults when the file is absent, unreadable or not understood, and per
+/// field: a settings.json written before scenes existed still selects its
+/// period, and only the missing half falls back.
 ///
 /// Falling back quietly would be its own bug, though: someone who chose 30 days
 /// and is being shown one day has no way to tell that from having chosen one
 /// day. Everything except a missing file — which is just a fresh install —
 /// leaves a line in the log.
-pub fn load() -> Period {
+pub fn load() -> Settings {
     let Some(path) = path() else {
-        crate::usage::log("settings      LOCALAPPDATA is not set, using today");
-        return Period::Today;
+        crate::usage::log("settings      LOCALAPPDATA is not set, using defaults");
+        return Settings::default();
     };
     match std::fs::read_to_string(&path) {
         Ok(raw) => parse(&raw).unwrap_or_else(|| {
             crate::usage::log(&format!(
-                "settings      {} holds no period this build knows, using today",
+                "settings      {} is not readable as settings, using defaults",
                 path.display()
             ));
-            Period::Today
+            Settings::default()
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Period::Today,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
         Err(e) => {
-            crate::usage::log(&format!("settings      unreadable ({e}), using today"));
-            Period::Today
+            crate::usage::log(&format!("settings      unreadable ({e}), using defaults"));
+            Settings::default()
         }
     }
 }
 
-fn parse(raw: &str) -> Option<Period> {
+/// `None` when the file is not a JSON object — including when it is valid JSON
+/// of some other shape, because an array is no more a settings record than a
+/// stray sentence is, and the difference is worth a line in the log.
+///
+/// Within an object, a field that is missing or names something this build does
+/// not know falls back on its own, so one bad field cannot discard the other.
+fn parse(raw: &str) -> Option<Settings> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    Period::from_key(v.get("period")?.as_str()?)
+    v.as_object()?;
+    let field = |name: &str| v.get(name).and_then(serde_json::Value::as_str);
+    let d = Settings::default();
+    Some(Settings {
+        period: field("period").and_then(Period::from_key).unwrap_or(d.period),
+        scene: field("scene").and_then(SceneChoice::from_key).unwrap_or(d.scene),
+    })
 }
 
-pub fn save(period: Period) -> std::io::Result<()> {
+/// The on-disk form. A function rather than a `format!` inside `save`, so the
+/// round-trip test reads what `save` writes instead of a second copy of this
+/// string — a copy would agree with itself while the file said something else.
+fn body(s: Settings) -> String {
+    format!(
+        "{{\"period\":\"{}\",\"scene\":\"{}\"}}",
+        s.period.key(),
+        s.scene.key()
+    )
+}
+
+pub fn save(s: Settings) -> std::io::Result<()> {
     let path = path().ok_or_else(|| std::io::Error::other("LOCALAPPDATA is not set"))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     // Written to one side and renamed in, the same way the usage cache is. A
     // saver or a detached refresher can be reading this while the dialog writes
-    // it, and a torn read would not just fall back to today — since load() now
+    // it, and a torn read would not just fall back to defaults — since load()
     // logs anything it cannot parse, it would also leave a misleading line
     // blaming the file.
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, format!("{{\"period\":\"{}\"}}", period.key()))?;
+    std::fs::write(&tmp, body(s))?;
     std::fs::rename(&tmp, &path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
@@ -123,9 +247,15 @@ mod tests {
     #[test]
     fn every_key_round_trips() {
         // The keys are a storage format. A typo here is a settings file that
-        // silently reverts to today.
+        // silently reverts to a default.
         for p in Period::ALL {
             assert_eq!(Period::from_key(p.key()), Some(p));
+        }
+        for s in Scene::ALL {
+            assert_eq!(Scene::from_key(s.key()), Some(s));
+        }
+        for c in SceneChoice::ALL {
+            assert_eq!(SceneChoice::from_key(c.key()), Some(c));
         }
     }
 
@@ -134,49 +264,84 @@ mod tests {
         // Spelled out rather than derived, because these are a storage format:
         // a settings.json and a cache file on disk both name them, and changing
         // one silently discards what is stored under the old spelling.
-        let keys: Vec<_> = Period::ALL.iter().map(|p| p.key()).collect();
-        assert_eq!(keys, ["1d", "wtd", "mtd", "7d", "30d"]);
+        let periods: Vec<_> = Period::ALL.iter().map(|p| p.key()).collect();
+        assert_eq!(periods, ["1d", "wtd", "mtd", "7d", "30d"]);
+        let scenes: Vec<_> = SceneChoice::ALL.iter().map(|c| c.key()).collect();
+        assert_eq!(scenes, ["random", "mine", "forge", "rack", "dock"]);
     }
 
     #[test]
     fn a_stored_choice_is_read_back() {
-        assert_eq!(parse(r#"{"period":"7d"}"#), Some(Period::Last7Days));
-        assert_eq!(parse(r#"{"period":"wtd"}"#), Some(Period::WeekToDate));
-        assert_eq!(
-            parse(r#"{"period":"30d","extra":1}"#),
-            Some(Period::Last30Days)
-        );
+        let s = parse(r#"{"period":"7d","scene":"dock"}"#).unwrap();
+        assert_eq!(s.period, Period::Last7Days);
+        assert_eq!(s.scene, SceneChoice::One(Scene::Dock));
     }
 
     #[test]
-    fn the_keys_that_predate_the_calendar_periods_still_mean_what_they_did() {
-        // A settings.json written before this-week and this-month existed must
-        // keep selecting the rolling window it selected then, not be quietly
-        // re-pointed at the calendar one with a similar name.
-        assert_eq!(parse(r#"{"period":"1d"}"#), Some(Period::Today));
-        assert_eq!(parse(r#"{"period":"7d"}"#), Some(Period::Last7Days));
-        assert_eq!(parse(r#"{"period":"30d"}"#), Some(Period::Last30Days));
+    fn a_file_written_before_scenes_existed_keeps_its_period() {
+        // The half that is missing falls back; the half that is there must not.
+        let s = parse(r#"{"period":"30d"}"#).unwrap();
+        assert_eq!(s.period, Period::Last30Days);
+        assert_eq!(s.scene, Settings::default().scene);
     }
 
     #[test]
-    fn anything_unrecognised_falls_back_rather_than_failing() {
-        // load() turns each of these into Today. None of them may panic.
-        for raw in [
-            "",
-            "{}",
-            "not json",
-            r#"{"period":"1y"}"#,
-            r#"{"period":7}"#,
-        ] {
-            assert_eq!(parse(raw), None, "{raw:?} should not parse");
+    fn one_unrecognised_field_does_not_discard_the_other() {
+        let s = parse(r#"{"period":"wtd","scene":"volcano"}"#).unwrap();
+        assert_eq!(s.period, Period::WeekToDate);
+        assert_eq!(s.scene, Settings::default().scene);
+
+        let s = parse(r#"{"period":"1y","scene":"forge"}"#).unwrap();
+        assert_eq!(s.period, Settings::default().period);
+        assert_eq!(s.scene, SceneChoice::One(Scene::Forge));
+    }
+
+    #[test]
+    fn anything_that_is_not_json_falls_back_whole() {
+        for raw in ["", "not json", "[]", "\"just a string\""] {
+            assert!(parse(raw).is_none(), "{raw:?} should not parse");
         }
+        // An empty object is valid JSON, so it parses — into the defaults.
+        assert_eq!(parse("{}"), Some(Settings::default()));
+        // So does an object whose fields are the right names and the wrong
+        // type. `as_str` says no to both, and each falls back on its own.
+        assert_eq!(parse(r#"{"period":7,"scene":true}"#), Some(Settings::default()));
     }
 
     #[test]
     fn what_save_writes_is_what_parse_reads() {
-        for p in Period::ALL {
-            let body = format!("{{\"period\":\"{}\"}}", p.key());
-            assert_eq!(parse(&body), Some(p));
+        // Through `body`, which is the function `save` writes with — not a copy
+        // of its format string, which would agree with itself for ever.
+        for period in Period::ALL {
+            for scene in SceneChoice::ALL {
+                let s = Settings { period, scene };
+                assert_eq!(parse(&body(s)), Some(s));
+            }
+        }
+    }
+
+    #[test]
+    fn a_fixed_choice_resolves_to_itself() {
+        for s in Scene::ALL {
+            assert_eq!(SceneChoice::One(s).resolve(), s);
+        }
+    }
+
+    #[test]
+    fn random_does_not_answer_the_same_thing_every_time() {
+        // Not a distribution test — just that it is not a constant, which is
+        // what a mis-seeded hasher would give.
+        let seen: std::collections::HashSet<_> =
+            (0..300).map(|_| SceneChoice::Random.resolve()).collect();
+        assert!(seen.len() > 1, "Random always resolved to {seen:?}");
+    }
+
+    #[test]
+    fn random_can_reach_every_scene() {
+        let seen: std::collections::HashSet<_> =
+            (0..4000).map(|_| SceneChoice::Random.resolve()).collect();
+        for s in Scene::ALL {
+            assert!(seen.contains(&s), "Random never produced {s:?}");
         }
     }
 }

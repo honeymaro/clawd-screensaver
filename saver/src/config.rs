@@ -20,7 +20,7 @@ use tao::{
 use wry::{WebViewBuilder, http::Request};
 
 use crate::{
-    settings::{self, Period},
+    settings::{self, Period, SceneChoice, Settings},
     usage,
 };
 
@@ -31,32 +31,60 @@ const BG: wry::RGBA = (20, 18, 15, 255);
 
 #[derive(PartialEq, Eq, Debug)]
 enum Msg {
-    Save(Period),
+    Save(Settings),
     Close,
 }
 
 /// What the page asked for.
 ///
-/// Anything that is not a `save:` for a period this build knows about closes
+/// Anything that is not a `save:` carrying values this build knows about closes
 /// without writing. That covers the Cancel button, the window's X, and the case
 /// where settings.html and settings.rs have drifted apart — in which case
 /// leaving whatever is already stored alone is the safe reading.
-fn message(body: &str) -> Msg {
-    body.strip_prefix("save:")
-        .and_then(Period::from_key)
-        .map_or(Msg::Close, Msg::Save)
+///
+/// A field the page omits, or names something this build does not know, falls
+/// back to **what is currently stored** rather than to the default. That is the
+/// difference between a dialog that leaves a setting alone and one that resets
+/// it: an older page against a newer host would otherwise wipe the half it does
+/// not know about, and the user would have no way to tell that from having
+/// chosen the default themselves.
+///
+/// Not reachable today — the page is compiled in and always sends both fields —
+/// which is exactly why it is worth pinning before a third field exists.
+fn message(body: &str, current: Settings) -> Msg {
+    let Some(json) = body.strip_prefix("save:") else {
+        return Msg::Close;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Msg::Close;
+    };
+    // Valid JSON of the wrong shape is not a save. An array has no fields, so
+    // without this it would read as "every field absent" and rewrite the file
+    // with what it already said, on a message that meant nothing.
+    if !v.is_object() {
+        return Msg::Close;
+    }
+    let field = |name: &str| v.get(name).and_then(serde_json::Value::as_str);
+    Msg::Save(Settings {
+        period: field("period")
+            .and_then(Period::from_key)
+            .unwrap_or(current.period),
+        scene: field("scene")
+            .and_then(SceneChoice::from_key)
+            .unwrap_or(current.scene),
+    })
 }
 
-pub fn run(current: Period) -> wry::Result<()> {
+pub fn run(current: Settings) -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
         .with_title("Clawd Saver")
-        // Sized to hold the five options without a scrollbar. The window cannot
-        // be resized, so if anything ever outgrows it the page scrolls its own
-        // list rather than pushing Save and Cancel off the bottom.
-        .with_inner_size(LogicalSize::new(440.0, 430.0))
+        // Sized to hold both groups without a scrollbar. The window cannot be
+        // resized, so if anything ever outgrows it the page scrolls its own form
+        // rather than pushing Save and Cancel off the bottom.
+        .with_inner_size(LogicalSize::new(440.0, 700.0))
         .with_resizable(false)
         .with_visible(false) // revealed once it has been placed
         .build(&event_loop)
@@ -79,13 +107,14 @@ pub fn run(current: Period) -> wry::Result<()> {
     // arrow keys the page binds all go nowhere.
     window.set_focus();
 
-    // `key()` is a bare ASCII identifier, so this cannot escape the string
-    // literal. It is still written through the JSON serialiser rather than
+    // Both `key()`s are bare ASCII identifiers, so this cannot escape the string
+    // literals. They are still written through the JSON serialiser rather than
     // pasted, because "the value is safe today" is not a property that survives
     // someone adding a period later.
     let init = format!(
-        "window.CLAWD_PERIOD = {};",
-        serde_json::Value::from(current.key())
+        "window.CLAWD_PERIOD = {};window.CLAWD_SCENE = {};",
+        serde_json::Value::from(current.period.key()),
+        serde_json::Value::from(current.scene.key())
     );
 
     let mut web_context = usage::web_context();
@@ -94,16 +123,20 @@ pub fn run(current: Period) -> wry::Result<()> {
         .with_background_color(BG)
         .with_initialization_script(init)
         .with_ipc_handler(move |req: Request<String>| {
-            let _ = proxy.send_event(message(req.body().as_str()));
+            let _ = proxy.send_event(message(req.body().as_str(), current));
         })
         .build(&window)?;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
-            Event::UserEvent(Msg::Save(period)) => {
-                match settings::save(period) {
-                    Ok(()) => usage::log(&format!("settings      period={}", period.key())),
+            Event::UserEvent(Msg::Save(chosen)) => {
+                match settings::save(chosen) {
+                    Ok(()) => usage::log(&format!(
+                        "settings      period={} scene={}",
+                        chosen.period.key(),
+                        chosen.scene.key()
+                    )),
                     Err(e) => {
                         // Everywhere else in this program the log is the only
                         // channel there is. This is the one moment someone is
@@ -138,46 +171,123 @@ pub fn run(current: Period) -> wry::Result<()> {
 mod tests {
     use super::*;
 
-    /// The keys `settings.html` actually offers, scraped out of the page itself.
+    /// The keys one of `settings.html`'s lists offers, scraped from the page.
     ///
     /// Read rather than repeated because a repeated list is only a guess about
     /// the page: change both together and nothing notices. The page is compiled
     /// into this binary, so the test can consult the real thing.
-    fn keys_offered_by_the_page() -> Vec<&'static str> {
-        UI.match_indices("key: '")
-            .map(|(at, m)| {
-                let rest = &UI[at + m.len()..];
-                &rest[..rest
-                    .find('\'')
-                    .expect("unterminated key literal in settings.html")]
+    fn keys_in(list: &str) -> Vec<&'static str> {
+        let at = UI
+            .find(&format!("const {list} = ["))
+            .unwrap_or_else(|| panic!("settings.html no longer declares {list}"));
+        let body = &UI[at..at + UI[at..].find("];").expect("unterminated list")];
+        body.match_indices("key: '")
+            .map(|(i, m)| {
+                let rest = &body[i + m.len()..];
+                &rest[..rest.find('\'').expect("unterminated key literal")]
             })
             .collect()
     }
 
+    /// Something other than the defaults, so a test cannot pass by falling back.
+    fn stored() -> Settings {
+        Settings {
+            period: Period::Last30Days,
+            scene: SceneChoice::One(settings::Scene::Rack),
+        }
+    }
+
     #[test]
-    fn every_option_the_page_offers_maps_to_a_period() {
+    fn every_period_the_page_offers_is_one_the_host_accepts() {
         // An option whose key the host does not accept is silently a second
         // Cancel button: the click posts, `message` shrugs, the dialog closes.
-        let offered = keys_offered_by_the_page();
+        let offered = keys_in("PERIODS");
         for key in &offered {
             let period = Period::from_key(key)
-                .unwrap_or_else(|| panic!("settings.html offers {key:?}, which no Period accepts"));
-            assert_eq!(message(&format!("save:{key}")), Msg::Save(period));
+                .unwrap_or_else(|| panic!("settings.html offers period {key:?}, unknown here"));
+            let body = format!(r#"save:{{"period":"{key}"}}"#);
+            let want = Settings { period, ..stored() };
+            assert_eq!(message(&body, stored()), Msg::Save(want));
         }
         // And the other direction: a period added to the enum but not to the
         // page would otherwise be unreachable with nothing to say so.
+        assert_eq!(offered.len(), Period::ALL.len(), "page offers {offered:?}");
+    }
+
+    #[test]
+    fn every_scene_the_page_offers_is_one_the_host_accepts() {
+        let offered = keys_in("SCENES");
+        for key in &offered {
+            let scene = SceneChoice::from_key(key)
+                .unwrap_or_else(|| panic!("settings.html offers scene {key:?}, unknown here"));
+            let body = format!(r#"save:{{"scene":"{key}"}}"#);
+            let want = Settings { scene, ..stored() };
+            assert_eq!(message(&body, stored()), Msg::Save(want));
+        }
         assert_eq!(
             offered.len(),
-            Period::ALL.len(),
-            "settings.html offers {offered:?} against {} periods",
-            Period::ALL.len()
+            SceneChoice::ALL.len(),
+            "page offers {offered:?}"
+        );
+    }
+
+    #[test]
+    fn both_fields_travel_together() {
+        let body = r#"save:{"period":"30d","scene":"dock"}"#;
+        assert_eq!(
+            message(body, Settings::default()),
+            Msg::Save(Settings {
+                period: Period::Last30Days,
+                scene: SceneChoice::One(settings::Scene::Dock),
+            })
+        );
+    }
+
+    #[test]
+    fn a_field_the_page_did_not_send_leaves_what_is_stored_alone() {
+        // An older page against a newer host: the half it knows still applies,
+        // and the half it does not know keeps its value rather than reverting.
+        assert_eq!(
+            message(r#"save:{"period":"7d"}"#, stored()),
+            Msg::Save(Settings {
+                period: Period::Last7Days,
+                scene: stored().scene
+            })
+        );
+        assert_eq!(message("save:{}", stored()), Msg::Save(stored()));
+    }
+
+    #[test]
+    fn a_value_this_build_does_not_know_leaves_that_field_alone() {
+        // A newer page offering a fifth scene, saved against this host. The
+        // scene it named cannot be honoured; overwriting the one that is stored
+        // with a default would be the worst of the three options.
+        assert_eq!(
+            message(r#"save:{"period":"wtd","scene":"volcano"}"#, stored()),
+            Msg::Save(Settings {
+                period: Period::WeekToDate,
+                scene: stored().scene
+            })
         );
     }
 
     #[test]
     fn cancelling_and_closing_do_not_write() {
-        for body in ["close", "", "save:", "save:1y", "exit:mousemove", "save:1D"] {
-            assert_eq!(message(body), Msg::Close, "{body:?} should not save");
+        for body in [
+            "close",
+            "",
+            "save:",
+            "save:1d", // the pre-JSON shape
+            "save:not json",
+            "save:[]",
+            "save:\"1d\"",
+            "exit:mousemove",
+        ] {
+            assert_eq!(
+                message(body, stored()),
+                Msg::Close,
+                "{body:?} should not save"
+            );
         }
     }
 }
