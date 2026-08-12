@@ -289,6 +289,6 @@ Write-Host 'Settings:     Start-Process "' -NoNewline; Write-Host $installScr -N
 Write-Host '              (or right-click the .scr and pick Configure)'
 Write-Host '              how much: today, this week, this month, last 7 or last 30 days'
 Write-Host '              what Clawd is doing: mining, the forge, a server rack, night'
-Write-Host '              fishing, the receipt, the parcel line, the uplink, or a'
-Write-Host '              different one at every start'
+Write-Host '              fishing, the receipt, the parcel line, the uplink, the dojo,'
+Write-Host '              or a different one at every start'
 Write-Host 'Remove with:  .\install.ps1 -Uninstall'

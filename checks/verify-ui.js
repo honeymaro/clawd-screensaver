@@ -33,13 +33,22 @@ function assertMirrorsUi(font, poses) {
     'const BASE = 47 + DY;',
     'const RX = 64 + DX, RY = 29 + DY, CELL = 3;',
     'const AMOUNT_MAX_W = 96;',
-    // The mine's hat, pinned because this file re-derives it from DX and DY
-    // while the page now writes it out in stage units. Nothing else would
-    // notice the two drifting apart.
-    'rect(19, 33 + bob, 44, 3, HELMET);',
-    'rect(25, 27 + bob, 32, 6, HELMET);',
-    'rect(36, 28 + bob, 10, 5, LAMP_BX);',
-    'rect(38, 29 + bob, 6, 3, LAMP);',
+    // The mine's hat, whole, because this file re-derives it from DX and DY
+    // while the page writes it out in stage units and nothing else would notice
+    // the two drifting apart. The helper line is in here too: pinning only the
+    // four coordinates left the page free to drop the `+ bob` or the `+ dx`
+    // from it, and both passed.
+    `    helmet: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(19, 33, 44, 3, HELMET);
+      r(25, 27, 32, 6, HELMET);
+      r(36, 28, 10, 5, LAMP_BX);
+      r(38, 29, 6, 3, LAMP);
+    },`,
+    // And that the mine is still the scene wearing it. Pinning the hat alone
+    // let the mine be given a different one while this file went on checking
+    // four rects it had stopped drawing, which is the halo mistake again.
+    'drawClawd(bob, p.armDY, blinking, HAT.helmet);',
   ]) {
     if (!UI.includes(line)) {
       throw new Error(`ui.html changed: "${line}" is gone — update verify-ui.js to match`);

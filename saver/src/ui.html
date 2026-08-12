@@ -118,8 +118,11 @@
     ctx.fillStyle = fill;
     ctx.fillRect((x + driftX) * S, (y + driftY) * S, w * S, h * S);
   };
-  // For parts still expressed in the 48-unit reference space
-  const part = (p, dy, fill) => rect(p.x + OX, p.y + OY + dy, p.w, p.h, fill);
+  // For parts still expressed in the 48-unit reference space. `dx` is for the
+  // one scene that stands Clawd somewhere other than where every other scene
+  // does; it is zero everywhere else.
+  const part = (p, dy, fill, dx = 0) =>
+    rect(p.x + OX + dx, p.y + OY + dy, p.w, p.h, fill);
 
   // Half-unit grid snap. Every coordinate a swung tool produces goes through
   // this, so an even S still puts each block on whole device pixels.
@@ -286,68 +289,93 @@
   // drawClawd, which is how Clawd came to turn up at a printer and on a jetty in
   // mining kit. It is costume, not anatomy.
   //
-  // All of it lives between y 26 and the top of the body at 36. The amount row
+  // Every crown lives between y 26 and the top of the body at 36. The amount row
   // reaches y 24 at its tallest and drifts with everything else, so a couple of
-  // units of clearance is what keeps a hat out of the counter for good.
+  // units of clearance is what keeps a hat out of the counter for good. The
+  // headset's boom and the headband's tails are the two pieces that hang lower.
   const LEATHER = '#5A4132', GOG = '#8FA3B0', GOG_D = '#2E2823';
   const CUP     = '#3E454B', CUP_L = '#6E757B';
   const STRAW   = '#C2A263', STRAW_D = '#9B7F49';
   const BAND    = '#2B3B33', VISOR = '#4E9E6A', VISOR_D = '#2F6B45';
   const DENIM   = '#4A5C74', DENIM_D = '#36455A';
   const WOOL    = '#8A4A5B', WOOL_D = '#6B3745';
+  const TIE     = '#C0483F', TIE_D = '#8E332C', KNOT = '#E8E2D4';
 
+  // Each takes the bob and the same `dx` Clawd is standing at, and folds both
+  // into a local `r` so the coordinates below stay readable as the flat numbers
+  // they are.
   const HAT = {
     // Brim, dome, head lamp. No halo behind the lamp: a translucent rectangle
     // overhanging the dome just reads as a misaligned box.
-    helmet(bob) {
-      rect(19, 33 + bob, 44, 3, HELMET);
-      rect(25, 27 + bob, 32, 6, HELMET);
-      rect(36, 28 + bob, 10, 5, LAMP_BX);
-      rect(38, 29 + bob, 6, 3, LAMP);
+    helmet: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(19, 33, 44, 3, HELMET);
+      r(25, 27, 32, 6, HELMET);
+      r(36, 28, 10, 5, LAMP_BX);
+      r(38, 29, 6, 3, LAMP);
     },
     // Pushed up onto the brow rather than worn, which is where goggles live
     // between one piece of work and the next.
-    goggles(bob) {
-      rect(21, 32 + bob, 40, 4, LEATHER);
-      rect(25, 30 + bob, 12, 6, GOG_D);
-      rect(45, 30 + bob, 12, 6, GOG_D);
-      rect(27, 31 + bob, 8, 3, GOG);
-      rect(47, 31 + bob, 8, 3, GOG);
+    goggles: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(21, 32, 40, 4, LEATHER);
+      r(25, 30, 12, 6, GOG_D);
+      r(45, 30, 12, 6, GOG_D);
+      r(27, 31, 8, 3, GOG);
+      r(47, 31, 8, 3, GOG);
     },
-    headset(bob) {
-      rect(27, 28 + bob, 28, 3, STEEL);
-      rect(23, 30 + bob, 6, 8, CUP);
-      rect(53, 30 + bob, 6, 8, CUP);
-      rect(24, 32 + bob, 4, 4, CUP_L);
-      rect(54, 32 + bob, 4, 4, CUP_L);
+    headset: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(27, 28, 28, 3, STEEL);
+      r(23, 30, 6, 8, CUP);
+      r(53, 30, 6, 8, CUP);
+      r(24, 32, 4, 4, CUP_L);
+      r(54, 32, 4, 4, CUP_L);
       // The boom hangs off the near cup and has to touch it. Left to float it
       // is a stick and a ball in the air beside his chin.
-      rect(23, 36 + bob, 2, 6, CUP);
-      rect(18, 41 + bob, 6, 1, STEEL);
-      rect(15, 40 + bob, 3, 3, CUP_L);
+      r(23, 36, 2, 6, CUP);
+      r(18, 41, 6, 1, STEEL);
+      r(15, 40, 3, 3, CUP_L);
     },
     // Wider and floppier than the hard hat, and no lamp: the silhouette is the
     // whole difference at this size.
-    straw(bob) {
-      rect(15, 32 + bob, 52, 4, STRAW);
-      rect(27, 27 + bob, 28, 5, STRAW);
-      rect(27, 30 + bob, 28, 2, STRAW_D);
+    straw: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(15, 32, 52, 4, STRAW);
+      r(27, 27, 28, 5, STRAW);
+      r(27, 30, 28, 2, STRAW_D);
     },
     // A print room eyeshade: a band and a peak, and deliberately no dome.
-    visor(bob) {
-      rect(25, 29 + bob, 32, 4, BAND);
-      rect(19, 33 + bob, 44, 3, VISOR);
-      rect(19, 35 + bob, 44, 1, VISOR_D);
+    visor: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(25, 29, 32, 4, BAND);
+      r(19, 33, 44, 3, VISOR);
+      r(19, 35, 44, 1, VISOR_D);
     },
-    cap(bob) {
-      rect(25, 28 + bob, 32, 8, DENIM);
-      rect(25, 33 + bob, 32, 3, DENIM_D);
-      rect(57, 33 + bob, 8, 3, DENIM);        // the peak, and the asymmetry
+    cap: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(25, 28, 32, 8, DENIM);
+      r(25, 33, 32, 3, DENIM_D);
+      r(57, 33, 8, 3, DENIM);                // the peak, and the asymmetry
     },
-    beanie(bob) {
-      rect(27, 27 + bob, 28, 9, WOOL);
-      rect(25, 29 + bob, 32, 7, WOOL);
-      rect(25, 32 + bob, 32, 4, WOOL_D);      // the folded band
+    beanie: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(27, 27, 28, 9, WOOL);
+      r(25, 29, 32, 7, WOOL);
+      r(25, 32, 32, 4, WOOL_D);              // the folded band
+    },
+    // A headband, tails trailing. No crown, which is what separates it from the
+    // visor, and the tails run the opposite way from the cap's peak so the two
+    // asymmetric hats are not the same asymmetry. Flush with the body and not
+    // white: a pale bar wider than his head is the brightest thing on the stage
+    // after the counter, and it reads as a plank resting on him.
+    headband: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(23, 32, 36, 2, TIE);
+      r(23, 34, 36, 2, TIE_D);
+      r(38, 32, 6, 3, KNOT);                 // the disc, sunk into the band
+      r(19, 34, 4, 2, TIE);                  // tails, short and falling away
+      r(16, 36, 4, 2, TIE_D);                // meeting the first, not near it
     },
   };
 
@@ -355,20 +383,24 @@
   // different thing to do and dresses him for it, but he is the reason this is
   // Clawd Saver and not a generic counter, so his proportions do not vary.
   //
-  // `standing` is off for scenes where he is not on his feet; those draw their
-  // own legs, because dangling ones are the only part that changes.
-  function drawClawd(bob, armDY, blinking, hat, standing = true) {
-    if (standing) LEGS.forEach(l => part(l, 0, CORAL));
-    part(ARM_L, bob, CORAL);
-    part(ARM_R, bob + armDY, CORAL);
-    part(BODY, bob, CORAL);
+  // The options are all for one scene each, which is why they are options:
+  // `standing` off for a scene where he is not on his feet (those draw their own
+  // legs, dangling being the only part that changes), `dx` for the one that
+  // stands him somewhere other than where the rest do, and `armLDY` for the one
+  // where the far arm does something too.
+  function drawClawd(bob, armDY, blinking, hat, opts = {}) {
+    const dx = opts.dx || 0;
+    if (opts.standing !== false) LEGS.forEach(l => part(l, 0, CORAL, dx));
+    part(ARM_L, bob + (opts.armLDY || 0), CORAL, dx);
+    part(ARM_R, bob + armDY, CORAL, dx);
+    part(BODY, bob, CORAL, dx);
 
-    hat(bob);
+    hat(bob, dx);
 
     // Eyes hold a fixed +1 unit gaze towards whatever he is working on.
     EYES.forEach(e => {
-      if (blinking) rect(e.x + OX + 1, e.y + OY + bob + 3, e.w, 1, EYE);
-      else rect(e.x + OX + 1, e.y + OY + bob, e.w, e.h, EYE);
+      if (blinking) rect(e.x + OX + dx + 1, e.y + OY + bob + 3, e.w, 1, EYE);
+      else rect(e.x + OX + dx + 1, e.y + OY + bob, e.w, e.h, EYE);
     });
   }
 
@@ -758,7 +790,7 @@
         // standing legs' own x positions and widths. Started below the plank
         // instead they are correctly occluded and still wrong — the band of
         // decking left between body and leg reads as a character cut in half.
-        drawClawd(0, 0, blinking, HAT.straw, false);
+        drawClawd(0, 0, blinking, HAT.straw, { standing: false });
         LEGS.forEach(l => rect(l.x + OX, hip, l.w, 10, CORAL));
 
         blockLine(52 + DX, 35 + DY, TIP.x, TIP.y, 8, WOOD);
@@ -1073,6 +1105,203 @@
     };
   }
 
+  function makeDojo() {
+    // Barely above the background on purpose. Its job is to hide the throw and
+    // the landing, not to be a slab across the bottom of the picture.
+    const MAT     = '#1C1815';
+    const MAT_L   = '#2A241F';
+    // The only scene with a floor, so the only one where the ground is not the
+    // background. Everywhere else the "shadow" has to be lighter than the stage
+    // because there is nothing darker; here there is.
+    const SHADE   = '#100D0B';
+    const EDGE    = '#DCE6EE';
+    const TRAIL   = '#525C68';
+    const JUICE   = '#FFB8D0';
+
+    const FRUIT = [
+      { skin: '#3E7A3A', flesh: '#FF6FA5', lit: '#67A45F', dark: '#2A5628' },  // melon
+      { skin: '#D9782A', flesh: '#F5A64E', lit: '#EFA05A', dark: '#A2551A' },  // orange
+      { skin: '#C9B23C', flesh: '#F3E58A', lit: '#E4D171', dark: '#95822A' },  // lemon
+      { skin: '#6B4A8C', flesh: '#A87CC6', lit: '#8E68AC', dark: '#4C3465' },  // plum
+    ];
+
+    // Three fruit spread over one cycle, so one is at the top of its arc every
+    // 700 ms and the stage is never empty. Both the throw and the swing come off
+    // that single number, which is what keeps the blade landing on a fruit
+    // rather than near one.
+    const CYCLE = 2100, N = 3, BEAT = CYCLE / N;
+    // Clawd stands in the middle of the stage for this one, which no other scene
+    // does, and the fruit come in from both edges towards him. Ten by eight is a
+    // little over a quarter of his body: smaller than that and a fruit is a
+    // coloured pip rather than a thing being cut in half.
+    const SHIFT = 15;                  // his centre from 41 to the stage's 56
+    // Everything about the swords hangs off these two rather than off the
+    // literals 56 and 24. Written out, changing SHIFT moved the figure and left
+    // both blades floating where his hands used to be.
+    const CX = OX + BODY.x + BODY.w / 2 + SHIFT;
+    const HAND = 24;                   // each hand, out from his centre
+    // One arc on each side, mirrored about him, launching near an edge and
+    // arcing inwards. Neither reaches him: they are drawn behind him, so an arc
+    // that crossed him would take the fruit out of sight for half its flight.
+    const OUT_L = 6, OUT_R = 96, TRAVEL = 16, RISE = 34;
+    // The celebration's own arc, right across the stage and higher than theirs.
+    const BONUS_FROM = 4, BONUS_SPAN = 94, BONUS_RISE = 38;
+    // Thrown from under the floor and landing back under it. That is what makes
+    // the loop seamless: a fruit is never visible at the moment its phase wraps,
+    // and nothing ever has to leave the stage to sell it.
+    const arcX = (from, span, p) => snap(from + span * p);
+    const arcY = (rise, p) => snap(BASE - rise * 4 * p * (1 - p));
+
+    const flight = (now, i) => Math.floor(now / CYCLE + i / N);
+    const phase = (now, i) => (now / CYCLE + i / N) % 1;
+    const kind = (now, i) => FRUIT[(flight(now, i) + i) % FRUIT.length];
+    // Which side a fruit comes in on, and which side the blade goes to, are the
+    // same number reached two ways. A fruit's flight tops out on the beat
+    // `3 * flight + 1 - i`, so its side is that beat's parity, and the swing
+    // takes the parity of the beat it is in. They cannot disagree.
+    const fromLeft = (now, i) => (flight(now, i) + i + 1) % 2 === 0;
+
+    // Blade direction per pose. Only the direction: the length is normalised in
+    // drawSword, because these vectors are not the same magnitude and scaling
+    // them raw grew and shrank the blade by 41% once a beat, which is the very
+    // thing aiming the tip at a fixed spot would have done. The left-hand blade
+    // mirrors the x of all of it.
+    const SLASH = [
+      { dir: [2, -2],  armDY: -6  },   // 0 through the fruit
+      { dir: [3, 1],   armDY: -2  },   // 1 follow through, down
+      { dir: [0, -1],  armDY: -8  },   // 2 recovering, straight up
+      { dir: [1, -2],  armDY: -10 },   // 3 raised, ready
+    ];
+    // He holds one in each hand and only one of them swings. A single sword
+    // changing hands on the beat is a sword that teleports every 700 ms, and no
+    // pose hides that.
+    const GUARD = { dir: [1, -2], armDY: -6 };
+    const PREV = [3, 0, 1, 2];
+    const BLADE = 14;                  // hand to tip, the same in every pose
+
+    let prevSp = 0, bonusAt = -1e9;
+
+    // Clipped at the floor line rather than drawn through it. Below that line
+    // the mat covers everything anyway, so this changes nothing you can see, and
+    // it is what lets the fruit be big enough to read: drawn whole, a fruit
+    // waiting under the floor hangs past the bottom of the stage.
+    const bit = (x, y, w, h, c) => {
+      const cut = Math.min(h, BASE - y);
+      if (cut > 0) rect(x, y, w, cut, c);
+    };
+
+    function drawFruit(x, y, f, sep) {
+      if (sep === null) {
+        bit(x + 2, y, 6, 8, f.skin);
+        bit(x + 1, y + 1, 8, 6, f.skin);
+        bit(x, y + 2, 10, 4, f.skin);
+        bit(x + 1, y + 6, 8, 1, f.dark);
+        bit(x + 2, y + 1, 3, 2, f.lit);
+        return;
+      }
+      // Halves, opening from the middle. The cut face is the only place the
+      // flesh colour shows, which is why an uncut fruit reads as one lump.
+      bit(x + 2 - sep, y, 3, 8, f.skin);
+      bit(x + 1 - sep, y + 1, 4, 6, f.skin);
+      bit(x - sep, y + 2, 5, 4, f.skin);
+      bit(x + 4 - sep, y + 1, 1, 6, f.flesh);
+      bit(x + 5 + sep, y, 3, 8, f.skin);
+      bit(x + 5 + sep, y + 1, 4, 6, f.skin);
+      bit(x + 5 + sep, y + 2, 5, 4, f.skin);
+      bit(x + 5 + sep, y + 1, 1, 6, f.flesh);
+    }
+
+    // Half a beat out of step with the beat itself: a fruit reaches the top of
+    // its arc in the middle of its beat, not at the start of one.
+    const swingPhase = now => ((now % BEAT) / BEAT + 0.5) % 1;
+
+    // `side` is -1 for the left hand and 1 for the right. A pose of -1 means
+    // this hand is the one not working, and holds its guard.
+    function drawSword(side, pose) {
+      const s = pose < 0 ? GUARD : SLASH[pose];
+      const hx = CX + side * HAND;
+      const hy = 35 + DY + s.armDY;
+      // Only x mirrors, and only the direction is taken from the pose.
+      const tip = d => {
+        const len = Math.hypot(d[0], d[1]);
+        return [hx + (d[0] / len) * BLADE * side, hy + (d[1] / len) * BLADE];
+      };
+      if (pose === 0 || pose === 1) {
+        const [bx, by] = tip(SLASH[PREV[pose]].dir);
+        rect(snap(bx) - 1.5, snap(by) - 1.5, 3, 3, TRAIL);
+      }
+      const [cx, cy] = tip(s.dir);
+      // From the first step rather than the second, so the blade meets the grip.
+      // At a seventh of fourteen units the second step is four out, and the grip
+      // only reaches two.
+      blockLine(hx, hy, cx, cy, 7, STEEL, 1);
+      rect(snap(cx) - 1.5, snap(cy) - 1.5, 3, 3, EDGE);
+      rect(hx - 2, hy - 1.5, 4, 3, WOOD);    // the grip, in his hand
+    }
+
+    return {
+      accent: FRUIT[0].flesh,
+      celebrate(now) {
+        // One more, on an arc right across the stage and in front of everything,
+        // Clawd included. Behind him it spent half its flight inside his head:
+        // there is no arc that clears both his headband and the amount row.
+        // It starts under the floor like the others, so it arrives without
+        // appearing from nowhere.
+        bonusAt = now;
+        spawn(CX, 38, 12, [FRUIT[0].flesh, JUICE, FRUIT[0].skin], 26, 36);
+      },
+      // The one thing that cannot be derived: the instant a blade goes through,
+      // which is an edge rather than a position.
+      step(now) {
+        const sp = swingPhase(now);
+        if (sp < prevSp) {
+          let cut = 0;
+          for (let i = 1; i < N; i++) {
+            if (Math.abs(phase(now, i) - 0.5) < Math.abs(phase(now, cut) - 0.5)) cut = i;
+          }
+          const f = kind(now, cut);
+          // Where the halves part, which is the fruit's middle: `drawFruit`
+          // opens them either side of x + 5, and the apex puts x at OUT ± 8.
+          const at = fromLeft(now, cut) ? OUT_L + TRAVEL / 2 + 5
+                                        : OUT_R - TRAVEL / 2 + 5;
+          spawn(at, 38, 9, [f.flesh, f.skin, JUICE], 22, 32);
+        }
+        prevSp = sp;
+      },
+      draw(now, blinking) {
+        const sp = swingPhase(now);
+        const pose = sp < 0.12 ? 0 : sp < 0.30 ? 1 : sp < 0.62 ? 2 : 3;
+        // Which hand is working. Held for the whole beat, so the swing never
+        // changes sides part way through itself.
+        const left = Math.floor(now / BEAT) % 2 === 0;
+
+        // Fruit first. The floor goes over them, and that is what hides both the
+        // throw and the landing.
+        for (let i = 0; i < N; i++) {
+          const p = phase(now, i);
+          const x = fromLeft(now, i) ? arcX(OUT_L, TRAVEL, p) : arcX(OUT_R, -TRAVEL, p);
+          drawFruit(x, arcY(RISE, p), kind(now, i),
+                    p <= 0.5 ? null : Math.round((p - 0.5) * 20));
+        }
+        rect(-4, BASE, W + 8, H - BASE + 4, MAT_L);
+        rect(-4, BASE + 1, W + 8, H - BASE + 3, MAT);
+        rect(12 + DX + SHIFT, BASE, 32, 1.5, SHADE);
+
+        drawClawd(0, left ? GUARD.armDY : SLASH[pose].armDY, blinking, HAT.headband,
+                  { dx: SHIFT, armLDY: left ? SLASH[pose].armDY : GUARD.armDY });
+
+        drawSword(-1, left ? pose : -1);
+        drawSword(1, left ? -1 : pose);
+
+        // The bonus goes over the top of all of it, Clawd included.
+        const bp = (now - bonusAt) / CYCLE;
+        if (bp >= 0 && bp <= 1) {
+          drawFruit(arcX(BONUS_FROM, BONUS_SPAN, bp), arcY(BONUS_RISE, bp), FRUIT[0], null);
+        }
+      },
+    };
+  }
+
   const SCENES = {
     mine: makeMine(),
     forge: makeForge(),
@@ -1081,6 +1310,7 @@
     printer: makePrinter(),
     belt: makeBelt(),
     uplink: makeUplink(),
+    dojo: makeDojo(),
   };
   const scene = SCENES[window.CLAWD_SCENE] || SCENES.mine;
 

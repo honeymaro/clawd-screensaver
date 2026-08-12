@@ -64,6 +64,17 @@ function registryKeys() {
 }
 const SCENES = registryKeys();
 
+// Every scene promises its own colour for the celebration flash, and the README
+// lists all of them. Two sharing one is a copy-paste the fingerprint check
+// cannot see, because everything else about the two scenes still differs.
+const accents = [...html.matchAll(/^\s*accent:\s*([^,\n]+),/gm)].map(m => m[1].trim());
+if (accents.length !== SCENES.length) {
+  throw new Error(`${SCENES.length} scenes but ${accents.length} accents: ${accents}`);
+}
+if (new Set(accents).size !== accents.length) {
+  throw new Error(`two scenes share an accent: ${accents}`);
+}
+
 // Worst-case drift is the extreme corner of the random walk, matching the list
 // verify-ui.js checks the stage against.
 const DRIFTS = [[0, 0], [3, 2], [-3, -2], [3, -2], [-3, 2]];

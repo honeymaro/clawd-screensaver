@@ -1,9 +1,9 @@
 # Clawd Saver
 
 A Windows screensaver that shows your Claude Code spend while Clawd earns it, in
-whichever of seven scenes you pick: at the ore face, at a furnace, minding a
+whichever of eight scenes you pick: at the ore face, at a furnace, minding a
 rack, reading the bill as it prints, stamping parcels, aiming a dish at
-something, or fishing off a jetty at night.
+something, cutting fruit out of the air, or fishing off a jetty at night.
 
 ![Clawd swings a pickaxe into an ore block while today's spend is shown above him](docs/demo.gif)
 
@@ -81,24 +81,27 @@ shows exactly what **Today** shows.
 | The receipt | a printer, and the bill fan-folded into a pile beside it | the lamps go solid and paper flies |
 | Parcel line | parcels down a conveyor, stamped one by one | the ink turns bright |
 | The uplink | a dish pulsing from its throat out to the rim | the whole dish lights at once |
-| Surprise me | one of the seven, rolled again at every start | — |
+| The dojo | Clawd in the middle, a sword in each hand, fruit in from both edges | one more sails right across |
+| Surprise me | one of the eight, rolled again at every start | — |
 
 Each scene tints the counter with its own colour for that moment — gem for the
 mine, flame for the forge, a terminal green for the rack, moonlight for the
-jetty, a status red for the printer, stamp violet for the belt and signal blue
-for the dish — so a rise reads differently depending on what is on screen.
+jetty, a status red for the printer, stamp violet for the belt, signal blue for
+the dish and melon pink for the dojo — so a rise reads differently depending on
+what is on screen.
 
 **The receipt** is the only one whose picture carries the number as well: the
 height of the paper pile is the figure on a log scale, so a day's spend leaves a
 few sheets and a heavy month stacks up past Clawd's shoulder.
 
 **Surprise me** is rolled once per launch and shared, not rolled per display: a
-multi-monitor setup shows the same scene on every screen rather than seven
+multi-monitor setup shows the same scene on every screen rather than eight
 different ones.
 
-Thirteen options do not fit the dialog, so the form scrolls. It is not made
-taller to suit, because a window sized for the list would hang off the bottom of
-a 768-line laptop screen and the window cannot be resized.
+Fourteen options do not fit the dialog, so the form scrolls, and the stored scene
+is scrolled into view when it opens. It is not made taller to suit, because a
+window sized for the list would hang off the bottom of a 768-line laptop screen
+and the window cannot be resized.
 
 Both choices land in `%LOCALAPPDATA%\clawd-saver\settings.json`. Delete it, or
 write something it cannot parse, and it falls back to today's spend and the mine
@@ -302,7 +305,7 @@ Development switches:
 | Flag | Effect |
 |---|---|
 | `--windowed` | Ordinary 1280×800 window instead of taking over every display |
-| `--scene <name>` | Draw `mine`, `forge`, `rack`, `dock`, `printer`, `belt`, `uplink` or `random` for this run only, without touching what is stored. Case-insensitive. An unrecognised name leaves the stored scene alone and says so on stderr, rather than quietly drawing one nobody asked for. |
+| `--scene <name>` | Draw `mine`, `forge`, `rack`, `dock`, `printer`, `belt`, `uplink`, `dojo` or `random` for this run only, without touching what is stored. Case-insensitive. An unrecognised name leaves the stored scene alone and says so on stderr, rather than quietly drawing one nobody asked for. |
 | `--exit-after <ms>` | Quit on a timer, for unattended checks |
 | `--ignore-input` | Do not wire up the input exit, so a screenshot can be taken |
 | `--diag` | Have the page report viewport metrics over IPC |
@@ -339,13 +342,15 @@ edges the character is made of. The pickaxe swing is four discrete poses rather
 than a rotation, for the same reason — `ctx.rotate()` would destroy the grid.
 
 Clawd himself, the counter, the palette, the particles and the drift are shared;
-a scene is only what sits beside him, plus what he is wearing. Headgear is
+a scene is mostly what sits beside him, plus what he is wearing. Headgear is
 costume rather than anatomy, so it lives in a `HAT` table and each scene names
-one: the hard hat and its lamp belong to the mine, not to Clawd. Each one is a small object in `ui.html`'s
+one: the hard hat and its lamp belong to the mine, not to Clawd. A scene may
+also stand him somewhere else and drive his far arm, which the dojo is the only
+one to do. Each one is a small object in `ui.html`'s
 `SCENES` registry with an `accent` colour, a `celebrate(now)` for the moment the
 figure rises, a `draw(now, blinking)` that draws and advances nothing, and — only
 if it has state worth advancing — a `step(now, dt)` that advances and draws
-nothing. Two of the four have no `step` at all.
+nothing. Five of the eight have no `step` at all.
 
 That split is not tidiness. A secondary display paints one frame and then
 repaints only when the figure changes, and `prefers-reduced-motion` is honoured
@@ -361,9 +366,10 @@ changes repaints exactly when it changes.
 
 The same property is what makes `checks/verify-scenes.js` possible: a frame
 rendered at any instant is a real frame. The rest of the reasoning is in
-[docs/2026-08-11-four-scenes.md](docs/2026-08-11-four-scenes.md), and what the
-three added after it needed is in
-[docs/2026-08-12-three-more-scenes.md](docs/2026-08-12-three-more-scenes.md).
+[docs/2026-08-11-four-scenes.md](docs/2026-08-11-four-scenes.md), what the three
+added after it needed is in
+[docs/2026-08-12-three-more-scenes.md](docs/2026-08-12-three-more-scenes.md), and
+the eighth is in [docs/2026-08-12-the-dojo.md](docs/2026-08-12-the-dojo.md).
 
 Diagonals need care. Stepping a 3-unit block by a full 3 units along a diagonal
 makes consecutive blocks meet at their corners only, and the result reads as a
@@ -373,7 +379,9 @@ every angle. `checks/verify-ui.js` asserts that consecutive blocks actually
 overlap, not just that they are in bounds.
 
 On a near-black background there is nothing darker to cast a shadow with, so the
-ground under Clawd and the ore is a faintly *lighter* bar instead.
+ground under Clawd and the ore is a faintly *lighter* bar instead. The dojo is
+the exception, because it is the only scene with a floor: there the ground is not
+the background, so it can afford a shadow that is actually darker.
 
 Burn-in protection drifts the whole scene by a few whole units every half minute.
 

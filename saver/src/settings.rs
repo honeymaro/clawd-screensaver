@@ -65,10 +65,11 @@ impl Period {
 ///
 /// Each one is Clawd doing something that costs money: swinging at ore, feeding
 /// a furnace, minding a rack of servers, waiting on a jetty for something to
-/// bite, reading a receipt as it prints, stamping parcels off a belt, or aiming
-/// a dish at whatever is on the other end. The keys are what `ui.html`'s scene
-/// registry is indexed by, so they are a contract with the page rather than just
-/// a storage format — and `saver.rs` has a test that holds the two together.
+/// bite, reading a receipt as it prints, stamping parcels off a belt, aiming a
+/// dish at whatever is on the other end, or cutting fruit out of the air. The
+/// keys are what `ui.html`'s scene registry is indexed by, so they are a
+/// contract with the page rather than just a storage format — and `saver.rs`
+/// has a test that holds the two together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Scene {
     Mine,
@@ -78,12 +79,13 @@ pub enum Scene {
     Printer,
     Belt,
     Uplink,
+    Dojo,
 }
 
 impl Scene {
     /// In the order the settings dialog lists them, which is the order they were
     /// added: moving one would move a row under someone's cursor for no reason.
-    pub const ALL: [Scene; 7] = [
+    pub const ALL: [Scene; 8] = [
         Scene::Mine,
         Scene::Forge,
         Scene::Rack,
@@ -91,6 +93,7 @@ impl Scene {
         Scene::Printer,
         Scene::Belt,
         Scene::Uplink,
+        Scene::Dojo,
     ];
 
     pub fn key(self) -> &'static str {
@@ -102,6 +105,7 @@ impl Scene {
             Scene::Printer => "printer",
             Scene::Belt => "belt",
             Scene::Uplink => "uplink",
+            Scene::Dojo => "dojo",
         }
     }
 
@@ -119,7 +123,7 @@ pub enum SceneChoice {
 }
 
 impl SceneChoice {
-    pub const ALL: [SceneChoice; 8] = [
+    pub const ALL: [SceneChoice; 9] = [
         SceneChoice::Random,
         SceneChoice::One(Scene::Mine),
         SceneChoice::One(Scene::Forge),
@@ -128,6 +132,7 @@ impl SceneChoice {
         SceneChoice::One(Scene::Printer),
         SceneChoice::One(Scene::Belt),
         SceneChoice::One(Scene::Uplink),
+        SceneChoice::One(Scene::Dojo),
     ];
 
     pub fn key(self) -> &'static str {
@@ -151,9 +156,11 @@ impl SceneChoice {
             SceneChoice::One(s) => s,
             // A `RandomState` is seeded by the OS and then bumped per use, so
             // hashing nothing with a fresh one is a different number every
-            // time. Enough for picking one of seven, and it costs no dependency
-            // and no stored seed. The modulo bias against a non-power-of-two is
-            // one part in 2^61, which is not a number worth correcting.
+            // time. Enough for picking one of eight, and it costs no dependency
+            // and no stored seed. Eight divides 2^64, so `%` is exactly uniform
+            // here and the result rests on the low three bits alone; at a count
+            // that is not a power of two the bias would be about one part in
+            // 2^61, which would still not be worth correcting.
             SceneChoice::Random => {
                 use std::hash::{BuildHasher, Hasher};
                 let n = std::collections::hash_map::RandomState::new()
@@ -224,6 +231,11 @@ pub fn load() -> Settings {
 /// Within an object, a field that is missing or names something this build does
 /// not know falls back on its own, so one bad field cannot discard the other.
 fn parse(raw: &str) -> Option<Settings> {
+    // JSON has no byte order mark and serde refuses one, but this is Windows:
+    // Notepad writes UTF-8 with a BOM by default, so anyone who opens this file
+    // to change a word by hand hands it back with three bytes on the front and
+    // loses every setting in it. Costs one call to be kind about that.
+    let raw = raw.trim_start_matches('\u{feff}');
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     v.as_object()?;
     let field = |name: &str| v.get(name).and_then(serde_json::Value::as_str);
@@ -291,7 +303,7 @@ mod tests {
         let scenes: Vec<_> = SceneChoice::ALL.iter().map(|c| c.key()).collect();
         assert_eq!(
             scenes,
-            ["random", "mine", "forge", "rack", "dock", "printer", "belt", "uplink"]
+            ["random", "mine", "forge", "rack", "dock", "printer", "belt", "uplink", "dojo"]
         );
     }
 
@@ -331,6 +343,16 @@ mod tests {
         // So does an object whose fields are the right names and the wrong
         // type. `as_str` says no to both, and each falls back on its own.
         assert_eq!(parse(r#"{"period":7,"scene":true}"#), Some(Settings::default()));
+    }
+
+    #[test]
+    fn a_file_saved_by_notepad_still_parses() {
+        // Found by writing this file from PowerShell, whose `-Encoding utf8`
+        // adds the mark: the whole record was refused and the log blamed the
+        // file. Notepad does the same thing by default.
+        let s = parse("\u{feff}{\"period\":\"7d\",\"scene\":\"dojo\"}").unwrap();
+        assert_eq!(s.period, Period::Last7Days);
+        assert_eq!(s.scene, SceneChoice::One(Scene::Dojo));
     }
 
     #[test]

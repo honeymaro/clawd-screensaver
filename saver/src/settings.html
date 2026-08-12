@@ -132,6 +132,7 @@
     { key: 'printer', name: 'The receipt',   note: 'longer as you spend' },
     { key: 'belt',    name: 'Parcel line',   note: 'stamp, repeat'      },
     { key: 'uplink',  name: 'The uplink',    note: 'talking to something' },
+    { key: 'dojo',    name: 'The dojo',      note: 'fruit, and a sword' },
   ];
 
   // One radio group, built from a list. Two of them now, and the second is the
@@ -226,12 +227,16 @@
     (owner(e.target) || periods).step(e.target, step);
   });
 
-  // Thirteen options do not fit, so the scene group starts below the fold. Left
+  // Fourteen options do not fit, so the scene group starts below the fold. Left
   // alone, someone who chose the last scene opens Settings on a list with no
   // selection visible in it, which reads as the setting having been lost.
-  // Scrolled first, then focus, so the period group is what the keyboard has.
-  scenes.selectedRow().scrollIntoView({ block: 'nearest' });
-  periods.focusSelected();
+  //
+  // Focusing it is what scrolls it: `focus()` brings its element into view, and
+  // doing this the other way round — scroll the scene, then focus a period row
+  // above it — silently scrolled straight back up again, because that focus
+  // scrolls too. It also has to be the scene that takes focus rather than the
+  // period, so the arrow keys are never driving a list that is off the top.
+  scenes.focusSelected();
 })();
 </script>
 </body>

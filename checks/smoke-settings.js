@@ -20,7 +20,8 @@ const js = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'
 // defeat it. config.rs checks the page against the Rust enums; this checks it
 // against what a reader expects to see.
 const PERIODS = ['1d', 'wtd', 'mtd', '7d', '30d'];
-const SCENES = ['random', 'mine', 'forge', 'rack', 'dock', 'printer', 'belt', 'uplink'];
+const SCENES = ['random', 'mine', 'forge', 'rack', 'dock', 'printer', 'belt',
+                'uplink', 'dojo'];
 
 function el(tagName = 'DIV') {
   const node = {
@@ -152,14 +153,17 @@ for (const key of SCENES) {
   });
 }
 
-// Thirteen options do not fit the window, and the scene group is the half that
-// starts below the fold. A stored scene nobody can see reads as a lost setting.
+// Fourteen options do not fit the window, and the scene group is the half that
+// starts below the fold. A stored scene nobody can see reads as a lost setting,
+// and what brings it into view is being focused: `focus()` scrolls to its own
+// element. So the assertion is about focus, which this stub can see, rather
+// than about scroll position, which it cannot.
 for (const key of SCENES) {
-  ok &= run(`opening on ${key} scrolls that row into view`, '1d', key, s => {
+  ok &= run(`opening on ${key} puts focus on that row`, '1d', key, s => {
     const row = s.sceneRows()[SCENES.indexOf(key)];
-    eq(row.scrolledTo, 1, 'the selected scene row was not scrolled to');
-    const others = s.sceneRows().filter(r => r !== row).map(r => r.scrolledTo);
-    eq(others, others.map(() => 0), 'some other row was scrolled to as well');
+    eq(row.focused, 1, 'the stored scene row was not the one focused');
+    const strays = [...s.periodRows(), ...s.sceneRows()].filter(r => r !== row && r.focused);
+    eq(strays.length, 0, 'something else was focused as well, and focus scrolls');
   });
 }
 
