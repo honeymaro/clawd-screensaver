@@ -313,7 +313,18 @@ mod tests {
             .lines()
             .filter_map(|line| line.split_once(':'))
             .map(|(key, _)| key.trim())
-            .filter(|key| !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase()))
+            .filter(|key| !key.is_empty())
+            .inspect(|key| {
+                // Anything that is not a plain identifier means the registry has
+                // grown a shape this scraper does not read, and a scraper that
+                // quietly skips what it does not understand is worse than none:
+                // it would drop a page-only scene and let the count below agree
+                // by accident. Loud is the only safe way to be wrong here.
+                assert!(
+                    key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "ui.html's SCENES registry has a line this test cannot read: {key:?}"
+                );
+            })
             .collect()
     }
 

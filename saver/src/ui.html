@@ -282,24 +282,88 @@
     if (state !== 'ok' && state !== 'loading') rect(x + width + 3, y, 2, 2, AMOUNT_D);
   }
 
-  // Clawd himself is shared. Every scene puts him somewhere and hands him a
-  // different thing to do, but he is the reason this is Clawd Saver and not a
-  // generic counter, so his proportions do not vary.
+  // Headgear, one per scene. The hard hat and its lamp used to be drawn inside
+  // drawClawd, which is how Clawd came to turn up at a printer and on a jetty in
+  // mining kit. It is costume, not anatomy.
+  //
+  // All of it lives between y 26 and the top of the body at 36. The amount row
+  // reaches y 24 at its tallest and drifts with everything else, so a couple of
+  // units of clearance is what keeps a hat out of the counter for good.
+  const LEATHER = '#5A4132', GOG = '#8FA3B0', GOG_D = '#2E2823';
+  const CUP     = '#3E454B', CUP_L = '#6E757B';
+  const STRAW   = '#C2A263', STRAW_D = '#9B7F49';
+  const BAND    = '#2B3B33', VISOR = '#4E9E6A', VISOR_D = '#2F6B45';
+  const DENIM   = '#4A5C74', DENIM_D = '#36455A';
+  const WOOL    = '#8A4A5B', WOOL_D = '#6B3745';
+
+  const HAT = {
+    // Brim, dome, head lamp. No halo behind the lamp: a translucent rectangle
+    // overhanging the dome just reads as a misaligned box.
+    helmet(bob) {
+      rect(19, 33 + bob, 44, 3, HELMET);
+      rect(25, 27 + bob, 32, 6, HELMET);
+      rect(36, 28 + bob, 10, 5, LAMP_BX);
+      rect(38, 29 + bob, 6, 3, LAMP);
+    },
+    // Pushed up onto the brow rather than worn, which is where goggles live
+    // between one piece of work and the next.
+    goggles(bob) {
+      rect(21, 32 + bob, 40, 4, LEATHER);
+      rect(25, 30 + bob, 12, 6, GOG_D);
+      rect(45, 30 + bob, 12, 6, GOG_D);
+      rect(27, 31 + bob, 8, 3, GOG);
+      rect(47, 31 + bob, 8, 3, GOG);
+    },
+    headset(bob) {
+      rect(27, 28 + bob, 28, 3, STEEL);
+      rect(23, 30 + bob, 6, 8, CUP);
+      rect(53, 30 + bob, 6, 8, CUP);
+      rect(24, 32 + bob, 4, 4, CUP_L);
+      rect(54, 32 + bob, 4, 4, CUP_L);
+      // The boom hangs off the near cup and has to touch it. Left to float it
+      // is a stick and a ball in the air beside his chin.
+      rect(23, 36 + bob, 2, 6, CUP);
+      rect(18, 41 + bob, 6, 1, STEEL);
+      rect(15, 40 + bob, 3, 3, CUP_L);
+    },
+    // Wider and floppier than the hard hat, and no lamp: the silhouette is the
+    // whole difference at this size.
+    straw(bob) {
+      rect(15, 32 + bob, 52, 4, STRAW);
+      rect(27, 27 + bob, 28, 5, STRAW);
+      rect(27, 30 + bob, 28, 2, STRAW_D);
+    },
+    // A print room eyeshade: a band and a peak, and deliberately no dome.
+    visor(bob) {
+      rect(25, 29 + bob, 32, 4, BAND);
+      rect(19, 33 + bob, 44, 3, VISOR);
+      rect(19, 35 + bob, 44, 1, VISOR_D);
+    },
+    cap(bob) {
+      rect(25, 28 + bob, 32, 8, DENIM);
+      rect(25, 33 + bob, 32, 3, DENIM_D);
+      rect(57, 33 + bob, 8, 3, DENIM);        // the peak, and the asymmetry
+    },
+    beanie(bob) {
+      rect(27, 27 + bob, 28, 9, WOOL);
+      rect(25, 29 + bob, 32, 7, WOOL);
+      rect(25, 32 + bob, 32, 4, WOOL_D);      // the folded band
+    },
+  };
+
+  // Clawd himself is shared. Every scene puts him somewhere, hands him a
+  // different thing to do and dresses him for it, but he is the reason this is
+  // Clawd Saver and not a generic counter, so his proportions do not vary.
   //
   // `standing` is off for scenes where he is not on his feet; those draw their
   // own legs, because dangling ones are the only part that changes.
-  function drawClawd(bob, armDY, blinking, standing = true) {
+  function drawClawd(bob, armDY, blinking, hat, standing = true) {
     if (standing) LEGS.forEach(l => part(l, 0, CORAL));
     part(ARM_L, bob, CORAL);
     part(ARM_R, bob + armDY, CORAL);
     part(BODY, bob, CORAL);
 
-    // Helmet: brim, dome, head lamp. No halo behind the lamp — a translucent
-    // rectangle that overhangs the dome just reads as a misaligned box.
-    rect(6 + DX, 14 + DY + bob, 44, 3, HELMET);
-    rect(12 + DX, 8 + DY + bob, 32, 6, HELMET);
-    rect(23 + DX, 9 + DY + bob, 10, 5, LAMP_BX);
-    rect(25 + DX, 10 + DY + bob, 6, 3, LAMP);
+    hat(bob);
 
     // Eyes hold a fixed +1 unit gaze towards whatever he is working on.
     EYES.forEach(e => {
@@ -320,9 +384,11 @@
   // advance. Three rules:
   //
   //   `step` advances and draws nothing.
-  //   `draw` draws and advances nothing, and reads nothing but `now` and what
-  //     `celebrate` last set — so a frame drawn without a step before it is a
-  //     real frame rather than a stale one.
+  //   `draw` draws and advances nothing, and reads nothing but `now`, the
+  //     figure on screen, and what `celebrate` last set — so a frame drawn
+  //     without a step before it is a real frame rather than a stale one. The
+  //     figure counts because the host sets it, not `step`: a display that
+  //     repaints only when it changes repaints exactly when it changes.
   //   Every rectangle stays inside the stage at a drift of ±3 by ±2, unless it
   //     is a backdrop that spans the whole stage at every drift.
   //
@@ -446,7 +512,7 @@
         if (!rockGone(now)) rect(RX + 1.5, BASE, 15, 1.5, SHADOW);
 
         drawRock(now);
-        drawClawd(bob, p.armDY, blinking);
+        drawClawd(bob, p.armDY, blinking, HAT.helmet);
         drawPick(bob, p);
       },
     };
@@ -545,7 +611,7 @@
 
         drawFurnace(now);
         rect(66, 63, 7, 3, COAL);        // the pile he is working from
-        drawClawd(bob, p.armDY, blinking);
+        drawClawd(bob, p.armDY, blinking, HAT.goggles);
         drawShovel(bob, p);
       },
     };
@@ -588,7 +654,7 @@
       },
       draw(now, blinking) {
         // He is reading, not swinging: a slow shift of weight, nothing more.
-        const bob = Math.floor(now / 900) % 2 === 0 ? 0 : -1;
+        const bob = idleBob(now, 300);
         const lift = bob < 0 ? 2 : 0;
         const since = now - waveStart;
 
@@ -621,7 +687,7 @@
           rect(FAN_HUB.x + bx, FAN_HUB.y + by, 2, 2, FAN);
         }
 
-        drawClawd(bob, 0, blinking);
+        drawClawd(bob, 0, blinking, HAT.headset);
         // A tablet in the near hand, angled at the rack.
         rect(64, 48 + bob, 8, 11, CHASSIS_L);
         rect(65, 49 + bob, 6, 8, SCREEN);
@@ -692,7 +758,7 @@
         // standing legs' own x positions and widths. Started below the plank
         // instead they are correctly occluded and still wrong — the band of
         // decking left between body and leg reads as a character cut in half.
-        drawClawd(0, 0, blinking, false);
+        drawClawd(0, 0, blinking, HAT.straw, false);
         LEGS.forEach(l => rect(l.x + OX, hip, l.w, 10, CORAL));
 
         blockLine(52 + DX, 35 + DY, TIP.x, TIP.y, 8, WOOD);
@@ -713,11 +779,308 @@
     };
   }
 
+  // A slow shift of weight, for the scenes where Clawd is standing still and
+  // watching something rather than hitting it. Two states a second apart, with
+  // the phase in milliseconds so scenes do not all breathe in unison — added
+  // inside the floor it would only ever flip the parity, and every even phase
+  // would land back on the first one.
+  const idleBob = (now, phase) => (Math.floor((now + phase) / 1000) % 2 === 0 ? 0 : -1);
+
+  function makePrinter() {
+    const CASE    = '#3F4348';
+    const CASE_L  = '#5A6068';
+    const CASE_D  = '#282C30';
+    const PANEL   = '#15181A';
+    const PAPER   = '#EFE7D6';
+    const PAPER_D = '#C4B99E';
+    const INK     = '#2B2723';
+    const LED     = '#F2685C';
+    const LED_OFF = '#4A2723';
+
+    // The scenes that read at a glance are all one big mass with a saturated
+    // colour in it: a dark furnace around a fire, a dark rack around its lights.
+    // So the bill is the mass here, not the machine. A fan-folded stack of paper
+    // beside Clawd, as tall as the figure, in the one warm off-white nothing
+    // else on the stage uses.
+    const SX = 64, SW = 16;            // the pile
+    // Eight folds at most, so the pile tops out at 50 and the paper coming out
+    // always has somewhere to fall. A taller pile would reach the slot, and the
+    // feed is the whole point of the scene.
+    const ROW = 2, MAX_ROWS = 8;
+    const PX = 86, PY = 32, PW = 22, PH = 18;
+    const SLOT = 36;                   // paper leaves the machine here
+    const RIB = 39;                    // and hangs from here
+
+    // Where the pile stops growing. A day and a month differ by two orders of
+    // magnitude on this machine, so a linear pile is either invisible for a day
+    // or off the stage by the second week; on a log scale ten dollars is a third
+    // of the way up and a thousand fills it.
+    const CAP = 1000;
+
+    let feedUntil = 0;
+
+    // The one place a scene reads the figure rather than the clock. Not state
+    // this scene advances: the host sets it, and a display that repaints only
+    // when it changes repaints exactly when this changes.
+    function rows() {
+      const cost = usage && typeof usage.cost === 'number' ? Math.max(0, usage.cost) : 0;
+      const t = Math.min(1, Math.log10(1 + cost) / Math.log10(1 + CAP));
+      return Math.round(t * MAX_ROWS);
+    }
+
+    return {
+      accent: LED,
+      celebrate(now) {
+        feedUntil = now + 1000;
+        spawn(77, RIB + 4, 8, [PAPER, PAPER_D, INK], 14, 30);
+      },
+      draw(now, blinking) {
+        const bob = idleBob(now, 0);
+        const lift = bob < 0 ? 2 : 0;
+        const feeding = now < feedUntil;
+        const n = rows();
+        const top = BASE - n * ROW;
+
+        rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
+        rect(SX + 1, BASE, SW - 2, 1.5, SHADOW);
+        rect(PX + 2, BASE, PW - 4, 1.5, SHADOW);
+
+        // Every other sheet sits two units proud, which is what a concertina
+        // looks like from the side and what a flat block of white does not.
+        for (let i = 0; i < n; i++) {
+          const y = BASE - (i + 1) * ROW;
+          const odd = i % 2 === 1;
+          rect(SX + (odd ? 2 : 0), y, SW - 2, ROW, odd ? PAPER_D : PAPER);
+          rect(SX + (odd ? 4 : 2), y + 0.5, 8, 1, INK);
+        }
+
+        // Nothing lands on the pile, deliberately. The pile's height is the
+        // figure, so it cannot actually grow, and every way of animating a sheet
+        // arriving onto a pile that does not grow ends the same: the sheet has
+        // to be taken away again, and taking it away is a pop once a second. The
+        // pile is the record of what has been printed and holds still; the paper
+        // is the printing and never does.
+
+        // Machine: a dark box on legs, feeding out of its left face.
+        rect(PX, PY, PW, PH, CASE);
+        rect(PX - 1, PY - 3, PW + 2, 3, CASE_L);
+        rect(PX + 4, PY + PH, 4, BASE - PY - PH, CASE_D);
+        rect(PX + PW - 8, PY + PH, 4, BASE - PY - PH, CASE_D);
+        // A head scanning back and forth behind the window. Six steps for four
+        // positions, so it turns round at each end instead of snapping back.
+        rect(PX + 4, PY + 4, 14, 5, PANEL);
+        const s = Math.floor(now / 130) % 6;
+        rect(PX + 5 + (s < 4 ? s : 6 - s) * 3, PY + 5, 3, 3, CASE_L);
+        // Three lamps, all lit while it feeds and one at a time otherwise. The
+        // only saturated thing on the machine, and the scene's accent.
+        for (let i = 0; i < 3; i++) {
+          const on = feeding || Math.floor(now / 400) % 3 === i;
+          rect(PX + 6 + i * 4, PY + 11, 2, 2, on ? LED : LED_OFF);
+        }
+        // The output slot, with a roller turning inside it.
+        rect(PX - 2, SLOT, 4, 4, PANEL);
+        rect(PX - 2, SLOT + (Math.floor(now / 175) % 2) * 2, 4, 2, CASE_L);
+
+        // The paper. Its length is fixed: a ribbon that grew and then snapped
+        // back to nothing every cycle read as a glitch, because that is what a
+        // sawtooth looks like. What moves is what is printed on it. The lines
+        // are identical and evenly spaced, so one leaving the bottom as another
+        // enters the top has no seam — the same trick as the conveyor's tread,
+        // and the only kind of loop that survives being watched for an hour.
+        // Set in from the pile's right edge rather than flush with it: the pile
+        // shifts two units every other sheet, so a flush ribbon overhangs it on
+        // odd row counts and leaves a notch of background under its corner.
+        rect(72, SLOT + 1, PX - 72, 2, PAPER);
+        rect(72, RIB, 6, Math.max(2, top - RIB), PAPER);
+        const off = Math.floor(now / 90) % 4;
+        for (let y = RIB + off; y < top; y += 4) {
+          rect(73, y, 4, 1, INK);
+          if (y + 2 < top) rect(73, y + 2, 2, 1, INK);   // a second column
+        }
+
+        drawClawd(bob, 0, blinking, HAT.visor);
+      },
+    };
+  }
+
+  function makeBelt() {
+    const FRAME   = '#3A4046';
+    const FRAME_L = '#565E66';
+    const BELT    = '#22262A';
+    const TREAD   = '#454C52';
+    const BOX     = '#B98149';
+    const BOX_D   = '#8C6035';
+    const TAPE    = '#D9C08F';
+    const INK     = '#5B4478';
+    const INK_L   = '#B98CF0';
+
+    // A conveyor running past Clawd, low enough that a parcel's lid is just
+    // under his hand. Reaching for one across the stage needed a handle four
+    // times the length of the stamp head, which is a selfie stick.
+    const BX = 50, BW = 54, TOP = 62;
+    const TICK = 140, SPAN = 40, BOXW = 7, BOXH = 7, N = 4;
+    // Four parcels ten units apart, moving two units a tick: one is under the
+    // stamp every five ticks, and `k % 5` is the whole rhythm of the scene. The
+    // stamp column is twelve units along, which puts that parcel directly in
+    // front of him.
+    const STAMP_AT = 12, STRIKE = 1;   // (2k + 10i) % 40 === 12 iff k % 5 === 1
+    const offset = (k, i) => (k * 2 + i * 10) % SPAN;
+    const LID = TOP - BOXH;            // the surface the stamp meets
+    // The parcels wrap from the end of their travel back to the start. Both ends
+    // are boxed in so that jump happens out of sight: uncovered, a parcel
+    // vanishes from mid-belt once every five ticks, in lockstep with the stamp.
+    const HOOD = 12, CHUTE = 88;
+
+    let inkUntil = 0;
+
+    return {
+      accent: INK_L,
+      celebrate(now) {
+        inkUntil = now + 900;
+        spawn(BX + STAMP_AT + 3, LID, 10, [INK_L, INK, TAPE], 16, 34);
+      },
+      draw(now, blinking) {
+        const k = Math.floor(now / TICK);
+        const beat = k % 5;
+        // Down on the beat, and one tick either side of it on the way.
+        // Clawd's hand sits at y 51 to 57, so a parcel lid has to be under that
+        // for him to press down on one at all. That fixes the height of the
+        // whole conveyor, and it is why it is a low one.
+        const armDY = beat === STRIKE ? -1
+                    : beat === 0 || beat === 2 ? -4 : -8;
+        const bob = beat === STRIKE ? 1 : 0;
+        const inking = now < inkUntil;
+
+        rect(12 + DX, BASE, 32, 1.5, SHADOW);
+
+        // It stands on the floor rather than on legs: with four units between
+        // the rail and the ground, legs would read as a wobble.
+        rect(BX, TOP, BW, 2, FRAME_L);
+        rect(BX, TOP + 2, BW, BASE - TOP - 2, BELT);
+        for (let x = (k * 2) % 6; x < BW; x += 6) {
+          rect(BX + x, TOP + 2, 2, 2, TREAD);
+        }
+
+        for (let i = 0; i < N; i++) {
+          const o = offset(k, i);
+          const px = BX + o;
+          rect(px, LID, BOXW, BOXH, BOX);
+          rect(px, TOP - 2, BOXW, 2, BOX_D);
+          rect(px + 3, LID, 1, BOXH, TAPE);
+          // Already past the stamp, so it carries a mark. Derived from where it
+          // is rather than remembered, which is why it survives a still frame.
+          if (o >= STAMP_AT) rect(px + 1, LID + 1, 5, 2, inking ? INK_L : INK);
+        }
+
+        // Feeder and chute, over the parcels: one hides the position they wrap
+        // to, the other the position they wrap from.
+        rect(BX, LID - 2, HOOD, TOP - LID + 2, FRAME);
+        rect(BX, LID - 2, HOOD, 2, FRAME_L);
+        rect(CHUTE, LID - 2, BX + BW - CHUTE, TOP - LID + 2, FRAME);
+        rect(CHUTE, LID - 2, BX + BW - CHUTE, 2, FRAME_L);
+
+        drawClawd(bob, armDY, blinking, HAT.cap);
+        // The stamp, and the proportions are the whole point: a head two and a
+        // half times the width of its grip, and a grip his hand closes on.
+        const sy = bob + armDY + 1;            // 0 at the bottom of the swing
+        rect(62, 46 + sy, 6, 2, WOOD);         // knob
+        rect(63, 48 + sy, 4, 4, WOOD);         // grip
+        rect(60, 52 + sy, 10, 3, STEEL);       // head
+        rect(60, 54 + sy, 10, 1, STEEL_L);     // the face that meets the lid
+      },
+    };
+  }
+
+  function makeUplink() {
+    const MAST   = '#5A6068';
+    const RIM    = '#8A929B';
+    const FACE   = '#3B4650';
+    const FACE_L = '#5E6A76';
+    const HORN   = '#B9C2CB';
+    const PAD    = '#2C3138';
+    const SCREEN = '#2F6C8C';
+    // Never off, only dim. A dish whose throat goes black between pulses is a
+    // dark disc on a dark stage for three quarters of every second.
+    const SIG    = '#2A5C78';
+    const SIG_L  = '#5FC8F5';
+
+    // Face on, pointed at whoever is watching. A dish in profile is a thin
+    // curved sliver at this size and reads as a hook; head on it is the widest
+    // solid mass the right-hand side can hold, and three shells of it can light
+    // in turn so a pulse leaves the middle and runs out to the rim.
+    //
+    // Aimed up rather than sideways would put the signal through the amount row,
+    // which reaches y 24 at its tallest. Everything here stays below 29.
+    const CX = 90;                  // the dish is symmetrical about this
+
+    let pingUntil = 0;
+
+    return {
+      accent: SIG_L,
+      celebrate(now) {
+        pingUntil = now + 1100;
+        spawn(CX, 34, 12, [SIG_L, SCREEN, HORN], 18, 40);
+      },
+      draw(now, blinking) {
+        const bob = idleBob(now, 600);
+        const lift = bob < 0 ? 2 : 0;
+        // The dish nods, which is the only idle motion it has.
+        const nod = Math.floor(now / 2300) % 2;
+        const pinging = now < pingUntil;
+        // Outward: throat, then the face, then the rim, then a beat of nothing.
+        const p = Math.floor(now / 240) % 4;
+        const lit = i => pinging || p === i;
+
+        rect(12 + DX + lift, BASE, 32 - lift * 2, 1.5, SHADOW);
+        rect(82, BASE, 16, 1.5, SHADOW);
+
+        // One unit taller than the dish's resting bottom edge, because the nod
+        // lifts the dish and would otherwise open a gap above the pole.
+        rect(88, 49, 4, 13, MAST);
+        rect(82, 62, 16, 4, PAD);
+
+        // Three shells, largest first, each painted over the middle of the last
+        // so lighting one lights a ring rather than a disc. Three rects per
+        // shell rather than two: at 28 units across, a two-rect octagon still
+        // has square enough corners to read as a screen on a stand.
+        const back = lit(2) ? SIG_L : FACE;
+        rect(80, 30 - nod, 20, 20, back);
+        rect(78, 32 - nod, 24, 16, back);
+        rect(76, 34 - nod, 28, 12, back);
+        // A lit upper rim, the same cue the jetty's moon uses: without it a grey
+        // octagon on a near-black stage has no edge to catch.
+        rect(80, 30 - nod, 20, 2, lit(2) ? SIG_L : RIM);
+        const mid = lit(1) ? SIG_L : FACE_L;
+        rect(83, 33 - nod, 14, 14, mid);
+        rect(81, 35 - nod, 18, 10, mid);
+        rect(84, 36 - nod, 12, 8, lit(0) ? SIG_L : SIG);
+
+        // Struts to the focus, then the feed horn over them. Without these it is
+        // a lit disc on a pole, which is a lamp.
+        rect(89, 30 - nod, 2, 8, MAST);
+        rect(76, 39 - nod, 11, 2, MAST);
+        rect(93, 39 - nod, 11, 2, MAST);
+        rect(87, 38 - nod, 6, 4, HORN);
+        rect(87, 38 - nod, 6, 1, RIM);
+
+        drawClawd(bob, 0, blinking, HAT.beanie);
+        // A handset, so he is aiming the thing rather than standing near it.
+        rect(62, 46 + bob, 9, 14, PAD);
+        rect(63, 48 + bob, 7, 7, pinging ? SIG_L : SCREEN);
+        rect(64, 56 + bob, 5, 2, FACE_L);
+        rect(69, 41 + bob, 2, 5, MAST);        // stub aerial
+      },
+    };
+  }
+
   const SCENES = {
     mine: makeMine(),
     forge: makeForge(),
     rack: makeRack(),
     dock: makeDock(),
+    printer: makePrinter(),
+    belt: makeBelt(),
+    uplink: makeUplink(),
   };
   const scene = SCENES[window.CLAWD_SCENE] || SCENES.mine;
 

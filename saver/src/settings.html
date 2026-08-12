@@ -14,6 +14,9 @@
     --coral: #D77757;
     --gem:   #45A8A0;
   }
+  /* The form scrolls at every font size now, so the scrollbar is permanent
+     furniture. Without this it is WebView2's light one on a dark dialog. */
+  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -121,11 +124,14 @@
     { key: '30d', name: 'Last 30 days', note: 'rolling'             },
   ];
   const SCENES = [
-    { key: 'random', name: 'Surprise me',    note: 'a different one each start' },
-    { key: 'mine',   name: 'Mining',         note: 'pickaxe and ore'    },
-    { key: 'forge',  name: 'The forge',      note: 'watching it burn'   },
-    { key: 'rack',   name: 'Server rack',    note: 'what you pay for'   },
-    { key: 'dock',   name: 'Night fishing',  note: 'waiting on a bite'  },
+    { key: 'random',  name: 'Surprise me',   note: 'a different one each start' },
+    { key: 'mine',    name: 'Mining',        note: 'pickaxe and ore'    },
+    { key: 'forge',   name: 'The forge',     note: 'watching it burn'   },
+    { key: 'rack',    name: 'Server rack',   note: 'what you pay for'   },
+    { key: 'dock',    name: 'Night fishing', note: 'waiting on a bite'  },
+    { key: 'printer', name: 'The receipt',   note: 'longer as you spend' },
+    { key: 'belt',    name: 'Parcel line',   note: 'stamp, repeat'      },
+    { key: 'uplink',  name: 'The uplink',    note: 'talking to something' },
   ];
 
   // One radio group, built from a list. Two of them now, and the second is the
@@ -164,7 +170,8 @@
           rows[i].setAttribute('aria-checked', String(on));
         });
       },
-      focusSelected() { rows[options.findIndex(o => o.key === selected)].focus(); },
+      selectedRow: () => rows[options.findIndex(o => o.key === selected)],
+      focusSelected() { api.selectedRow().focus(); },
       step(target, by) {
         const at = rows.indexOf(target);
         const from = at >= 0 ? at : options.findIndex(o => o.key === selected);
@@ -219,6 +226,11 @@
     (owner(e.target) || periods).step(e.target, step);
   });
 
+  // Thirteen options do not fit, so the scene group starts below the fold. Left
+  // alone, someone who chose the last scene opens Settings on a list with no
+  // selection visible in it, which reads as the setting having been lost.
+  // Scrolled first, then focus, so the period group is what the keyboard has.
+  scenes.selectedRow().scrollIntoView({ block: 'nearest' });
   periods.focusSelected();
 })();
 </script>

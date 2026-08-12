@@ -38,7 +38,8 @@ advancing. Two of the four do not. Three rules:
 
 - **`step` advances and draws nothing.**
 - **`draw` draws and advances nothing, and reads nothing but `now` and what
-  `celebrate` last set.**
+  `celebrate` last set.** (Widened later to include the figure on screen, for
+  the receipt printer: see [the three-scene note](2026-08-12-three-more-scenes.md).)
 - **Every rectangle stays inside the stage at a drift of ±3 by ±2, unless it is a
   backdrop that spans the stage at every drift.**
 

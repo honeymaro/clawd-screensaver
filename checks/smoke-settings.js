@@ -20,7 +20,7 @@ const js = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'
 // defeat it. config.rs checks the page against the Rust enums; this checks it
 // against what a reader expects to see.
 const PERIODS = ['1d', 'wtd', 'mtd', '7d', '30d'];
-const SCENES = ['random', 'mine', 'forge', 'rack', 'dock'];
+const SCENES = ['random', 'mine', 'forge', 'rack', 'dock', 'printer', 'belt', 'uplink'];
 
 function el(tagName = 'DIV') {
   const node = {
@@ -49,6 +49,8 @@ function el(tagName = 'DIV') {
       return (node.spans ||= {})[sel] ||= el();
     },
     click() { (node.listeners.click || []).forEach(fn => fn({})); },
+    scrollIntoView() { node.scrolledTo++; },
+    scrolledTo: 0,
   };
   return node;
 }
@@ -147,6 +149,17 @@ for (const key of PERIODS) {
 for (const key of SCENES) {
   ok &= run(`opens on the stored scene (${key})`, '1d', key, s => {
     eq(chosen(s.sceneRows(), SCENES), key, 'preselected scene');
+  });
+}
+
+// Thirteen options do not fit the window, and the scene group is the half that
+// starts below the fold. A stored scene nobody can see reads as a lost setting.
+for (const key of SCENES) {
+  ok &= run(`opening on ${key} scrolls that row into view`, '1d', key, s => {
+    const row = s.sceneRows()[SCENES.indexOf(key)];
+    eq(row.scrolledTo, 1, 'the selected scene row was not scrolled to');
+    const others = s.sceneRows().filter(r => r !== row).map(r => r.scrolledTo);
+    eq(others, others.map(() => 0), 'some other row was scrolled to as well');
   });
 }
 

@@ -81,9 +81,10 @@ pub fn run(current: Settings) -> wry::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Clawd Saver")
-        // Sized to hold both groups without a scrollbar. The window cannot be
-        // resized, so if anything ever outgrows it the page scrolls its own form
-        // rather than pushing Save and Cancel off the bottom.
+        // Thirteen options no longer fit, so the page scrolls its own form and
+        // keeps Save and Cancel below it. Not made taller to suit: the window
+        // cannot be resized, and one sized for the scene list would hang off the
+        // bottom of a 768-line laptop screen, which is worse than scrolling.
         .with_inner_size(LogicalSize::new(440.0, 700.0))
         .with_resizable(false)
         .with_visible(false) // revealed once it has been placed
@@ -224,6 +225,10 @@ mod tests {
             let want = Settings { scene, ..stored() };
             assert_eq!(message(&body, stored()), Msg::Save(want));
         }
+        // Deduplicated first: a page listing one scene twice and another not at
+        // all has the right number of valid keys and would otherwise pass.
+        let distinct: std::collections::HashSet<_> = offered.iter().collect();
+        assert_eq!(distinct.len(), offered.len(), "duplicate key in {offered:?}");
         assert_eq!(
             offered.len(),
             SceneChoice::ALL.len(),

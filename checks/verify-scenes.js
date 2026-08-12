@@ -83,6 +83,13 @@ function run(sceneName) {
   let rafCb = null, t = 0, fill = null;
   let expectClear = false;
   let fingerprint = 0;
+  // Per-frame, and collected only while the figure on screen is holding still,
+  // so the amount row's own animation cannot stand in for a scene that has
+  // stopped. A scene frozen on its first frame is otherwise indistinguishable
+  // from one that works: it has a perfectly distinct fingerprint, in bounds,
+  // aligned, 820 frames of it.
+  let frameHash = 0, watching = true;
+  const frames_seen = new Set();
   // Filled in from the page's own sizing once it has run. Nothing draws before
   // then: the page's last two statements are resize() and a rAF request, and
   // the callback is held rather than called.
@@ -95,7 +102,13 @@ function run(sceneName) {
   const note = msg => { if (problems.length < 4000) problems.push(msg); };
 
   const ctx = {
-    set fillStyle(v) { fill = v; },
+    // A real canvas ignores a fill it cannot parse and keeps the previous one,
+    // silently. `accent` is the value most likely to arrive undefined, and the
+    // only place it is used is the celebration flash.
+    set fillStyle(v) {
+      if (typeof v !== 'string') throw new Error(`fillStyle set to ${v}`);
+      fill = v;
+    },
     get fillStyle() { return fill; },
     fillRect(px, py, pw, ph) {
       // Back out of device pixels into stage units. The page has drift zero
@@ -118,7 +131,9 @@ function run(sceneName) {
       rects++;
       // Cheap order-sensitive hash, enough to tell two scenes apart.
       for (const v of [x, y, w, h, fill]) {
-        fingerprint = (Math.imul(fingerprint, 31) + String(v).length + (+v || 0)) | 0;
+        const step = String(v).length + (+v || 0);
+        fingerprint = (Math.imul(fingerprint, 31) + step) | 0;
+        frameHash = (Math.imul(frameHash, 31) + step) | 0;
       }
 
       const particle = isParticle(w, h);
@@ -182,11 +197,22 @@ function run(sceneName) {
 
   const tick = (ms) => {
     t += ms;
-    if (rafCb) { const cb = rafCb; rafCb = null; expectClear = true; frames++; cb(t); }
+    if (rafCb) {
+      const cb = rafCb;
+      rafCb = null;
+      expectClear = true;
+      frames++;
+      frameHash = 0;
+      cb(t);
+      if (watching) frames_seen.add(frameHash);
+    }
   };
 
   // Long enough to pass through every pose, several idle cycles and a respawn.
   for (let i = 0; i < 600; i++) tick(100);
+  // Past here the figure changes, so the amount row animates on its own and a
+  // frozen scene would hide behind it.
+  watching = false;
   // Then the celebration, which is the branch that draws the most.
   let cost = 1234.56;
   for (let n = 0; n < 3; n++) {
@@ -200,7 +226,11 @@ function run(sceneName) {
   win.CLAWD_USAGE({ cost: 98765.43, state: 'stale' });
   for (let i = 0; i < 20; i++) tick(120);
 
-  return { problems, rects, particles, frames, fingerprint };
+  if (!rects) note(`${sceneName}: drew nothing at all`);
+  if (frames_seen.size < 2) {
+    note(`${sceneName}: every idle frame is identical, so nothing in it moves`);
+  }
+  return { problems, rects, particles, frames, fingerprint, still: frames_seen.size };
 }
 
 let bad = 0;

@@ -1,7 +1,9 @@
 # Clawd Saver
 
-A Windows screensaver that shows your Claude Code spend while Clawd earns it —
-at the ore face, at a furnace, minding a rack, or fishing off a jetty at night.
+A Windows screensaver that shows your Claude Code spend while Clawd earns it, in
+whichever of seven scenes you pick: at the ore face, at a furnace, minding a
+rack, reading the bill as it prints, stamping parcels, aiming a dish at
+something, or fishing off a jetty at night.
 
 ![Clawd swings a pickaxe into an ore block while today's spend is shown above him](docs/demo.gif)
 
@@ -76,15 +78,27 @@ shows exactly what **Today** shows.
 | The forge | coal shovelled into a furnace | the fire flares |
 | Server rack | a tablet held beside a rack of blinking drives | a wave of green runs up the bays |
 | Night fishing | a jetty, a moon, and a line in the water | something takes the bait |
-| Surprise me | one of the four, rolled again at every start | — |
+| The receipt | a printer, and the bill fan-folded into a pile beside it | the lamps go solid and paper flies |
+| Parcel line | parcels down a conveyor, stamped one by one | the ink turns bright |
+| The uplink | a dish pulsing from its throat out to the rim | the whole dish lights at once |
+| Surprise me | one of the seven, rolled again at every start | — |
 
 Each scene tints the counter with its own colour for that moment — gem for the
-mine, ember for the forge, a terminal green for the rack, moonlight for the
-jetty — so a rise reads differently depending on what is on screen.
+mine, flame for the forge, a terminal green for the rack, moonlight for the
+jetty, a status red for the printer, stamp violet for the belt and signal blue
+for the dish — so a rise reads differently depending on what is on screen.
+
+**The receipt** is the only one whose picture carries the number as well: the
+height of the paper pile is the figure on a log scale, so a day's spend leaves a
+few sheets and a heavy month stacks up past Clawd's shoulder.
 
 **Surprise me** is rolled once per launch and shared, not rolled per display: a
-multi-monitor setup shows the same scene on every screen rather than four
+multi-monitor setup shows the same scene on every screen rather than seven
 different ones.
+
+Thirteen options do not fit the dialog, so the form scrolls. It is not made
+taller to suit, because a window sized for the list would hang off the bottom of
+a 768-line laptop screen and the window cannot be resized.
 
 Both choices land in `%LOCALAPPDATA%\clawd-saver\settings.json`. Delete it, or
 write something it cannot parse, and it falls back to today's spend and the mine
@@ -99,7 +113,7 @@ above, which is why the command is spelled out here.
 Rust + [`tao`](https://crates.io/crates/tao) + [`wry`](https://crates.io/crates/wry) —
 the window and webview crates that Tauri is built on, used directly without the
 Tauri framework, CLI, bundler, or IPC layer. WebView2 ships with Windows 11, so
-nothing is bundled. The release binary is **about 680 KB**, both pages included.
+nothing is bundled. The release binary is **about 700 KB**, both pages included.
 
 Both pages are embedded with `include_str!`, so the `.scr` is a single
 self-contained file.
@@ -111,8 +125,8 @@ path the same way — the long and 8.3-short forms of one binary had each grown
 their own profile of the same cached page, 70 MB and 74 MB. `install.ps1` deletes
 the old `*.WebView2` folders if it finds them.
 
-That profile is where the install's size actually goes: about 72 MB of it
-against 4 MB of ccusage and 680 KB of screensaver, ~77 MB in total. None of it
+That profile is where the install's size actually goes: about 69 MB of it
+against 4 MB of ccusage and 700 KB of screensaver, ~74 MB in total. None of it
 is written by this program — half is components the WebView2 runtime fetches for
 itself and a page of coloured rectangles will never use, Widevine DRM and a
 subresource filter list among them. `-Uninstall` takes it with the rest.
@@ -288,7 +302,7 @@ Development switches:
 | Flag | Effect |
 |---|---|
 | `--windowed` | Ordinary 1280×800 window instead of taking over every display |
-| `--scene <name>` | Draw `mine`, `forge`, `rack`, `dock` or `random` for this run only, without touching what is stored. Case-insensitive. An unrecognised name leaves the stored scene alone and says so on stderr, rather than quietly drawing one nobody asked for. |
+| `--scene <name>` | Draw `mine`, `forge`, `rack`, `dock`, `printer`, `belt`, `uplink` or `random` for this run only, without touching what is stored. Case-insensitive. An unrecognised name leaves the stored scene alone and says so on stderr, rather than quietly drawing one nobody asked for. |
 | `--exit-after <ms>` | Quit on a timer, for unattended checks |
 | `--ignore-input` | Do not wire up the input exit, so a screenshot can be taken |
 | `--diag` | Have the page report viewport metrics over IPC |
@@ -325,7 +339,9 @@ edges the character is made of. The pickaxe swing is four discrete poses rather
 than a rotation, for the same reason — `ctx.rotate()` would destroy the grid.
 
 Clawd himself, the counter, the palette, the particles and the drift are shared;
-a scene is only what sits beside him. Each one is a small object in `ui.html`'s
+a scene is only what sits beside him, plus what he is wearing. Headgear is
+costume rather than anatomy, so it lives in a `HAT` table and each scene names
+one: the hard hat and its lamp belong to the mine, not to Clawd. Each one is a small object in `ui.html`'s
 `SCENES` registry with an `accent` colour, a `celebrate(now)` for the moment the
 figure rises, a `draw(now, blinking)` that draws and advances nothing, and — only
 if it has state worth advancing — a `step(now, dt)` that advances and draws
@@ -338,9 +354,16 @@ Poses are therefore derived from `now` inside `draw` — the flame flicker, the
 drive LEDs, the swing — and a scene says "gone until this moment" rather than
 "gone", so it recovers without being stepped.
 
+`draw` may also read the figure on screen, which is how the receipt knows how
+much paper to lay on the floor. That is consistent rather than an exception: the
+host sets the figure, not `step`, and a display that repaints only when it
+changes repaints exactly when it changes.
+
 The same property is what makes `checks/verify-scenes.js` possible: a frame
 rendered at any instant is a real frame. The rest of the reasoning is in
-[docs/2026-08-11-four-scenes.md](docs/2026-08-11-four-scenes.md).
+[docs/2026-08-11-four-scenes.md](docs/2026-08-11-four-scenes.md), and what the
+three added after it needed is in
+[docs/2026-08-12-three-more-scenes.md](docs/2026-08-12-three-more-scenes.md).
 
 Diagonals need care. Stepping a 3-unit block by a full 3 units along a diagonal
 makes consecutive blocks meet at their corners only, and the result reads as a

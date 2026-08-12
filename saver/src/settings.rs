@@ -64,19 +64,34 @@ impl Period {
 /// Which scene the page draws below the counter.
 ///
 /// Each one is Clawd doing something that costs money: swinging at ore, feeding
-/// a furnace, minding a rack of servers, or waiting on a jetty for something to
-/// bite. The keys are what `ui.html`'s scene registry is indexed by, so they are
-/// a contract with the page, not just a storage format.
+/// a furnace, minding a rack of servers, waiting on a jetty for something to
+/// bite, reading a receipt as it prints, stamping parcels off a belt, or aiming
+/// a dish at whatever is on the other end. The keys are what `ui.html`'s scene
+/// registry is indexed by, so they are a contract with the page rather than just
+/// a storage format — and `saver.rs` has a test that holds the two together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Scene {
     Mine,
     Forge,
     Rack,
     Dock,
+    Printer,
+    Belt,
+    Uplink,
 }
 
 impl Scene {
-    pub const ALL: [Scene; 4] = [Scene::Mine, Scene::Forge, Scene::Rack, Scene::Dock];
+    /// In the order the settings dialog lists them, which is the order they were
+    /// added: moving one would move a row under someone's cursor for no reason.
+    pub const ALL: [Scene; 7] = [
+        Scene::Mine,
+        Scene::Forge,
+        Scene::Rack,
+        Scene::Dock,
+        Scene::Printer,
+        Scene::Belt,
+        Scene::Uplink,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -84,6 +99,9 @@ impl Scene {
             Scene::Forge => "forge",
             Scene::Rack => "rack",
             Scene::Dock => "dock",
+            Scene::Printer => "printer",
+            Scene::Belt => "belt",
+            Scene::Uplink => "uplink",
         }
     }
 
@@ -101,12 +119,15 @@ pub enum SceneChoice {
 }
 
 impl SceneChoice {
-    pub const ALL: [SceneChoice; 5] = [
+    pub const ALL: [SceneChoice; 8] = [
         SceneChoice::Random,
         SceneChoice::One(Scene::Mine),
         SceneChoice::One(Scene::Forge),
         SceneChoice::One(Scene::Rack),
         SceneChoice::One(Scene::Dock),
+        SceneChoice::One(Scene::Printer),
+        SceneChoice::One(Scene::Belt),
+        SceneChoice::One(Scene::Uplink),
     ];
 
     pub fn key(self) -> &'static str {
@@ -130,8 +151,9 @@ impl SceneChoice {
             SceneChoice::One(s) => s,
             // A `RandomState` is seeded by the OS and then bumped per use, so
             // hashing nothing with a fresh one is a different number every
-            // time. Enough for picking one of four, and it costs no dependency
-            // and no stored seed.
+            // time. Enough for picking one of seven, and it costs no dependency
+            // and no stored seed. The modulo bias against a non-power-of-two is
+            // one part in 2^61, which is not a number worth correcting.
             SceneChoice::Random => {
                 use std::hash::{BuildHasher, Hasher};
                 let n = std::collections::hash_map::RandomState::new()
@@ -267,7 +289,10 @@ mod tests {
         let periods: Vec<_> = Period::ALL.iter().map(|p| p.key()).collect();
         assert_eq!(periods, ["1d", "wtd", "mtd", "7d", "30d"]);
         let scenes: Vec<_> = SceneChoice::ALL.iter().map(|c| c.key()).collect();
-        assert_eq!(scenes, ["random", "mine", "forge", "rack", "dock"]);
+        assert_eq!(
+            scenes,
+            ["random", "mine", "forge", "rack", "dock", "printer", "belt", "uplink"]
+        );
     }
 
     #[test]

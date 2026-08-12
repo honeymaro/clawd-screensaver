@@ -33,6 +33,13 @@ function assertMirrorsUi(font, poses) {
     'const BASE = 47 + DY;',
     'const RX = 64 + DX, RY = 29 + DY, CELL = 3;',
     'const AMOUNT_MAX_W = 96;',
+    // The mine's hat, pinned because this file re-derives it from DX and DY
+    // while the page now writes it out in stage units. Nothing else would
+    // notice the two drifting apart.
+    'rect(19, 33 + bob, 44, 3, HELMET);',
+    'rect(25, 27 + bob, 32, 6, HELMET);',
+    'rect(36, 28 + bob, 10, 5, LAMP_BX);',
+    'rect(38, 29 + bob, 6, 3, LAMP);',
   ]) {
     if (!UI.includes(line)) {
       throw new Error(`ui.html changed: "${line}" is gone — update verify-ui.js to match`);
@@ -130,9 +137,11 @@ for (const [dx, dy] of DRIFTS) {
     chk(`${tag} armL`, 0 + OX, 33 + OY + bob, 7.5, 6, dx, dy);
     chk(`${tag} armR`, 40.5 + OX, 33 + OY + bob + p.armDY, 7.5, 6, dx, dy);
     chk(`${tag} body`, 6 + OX, 18 + OY + bob, 36, 24, dx, dy);
+    // The mine's headgear, which now lives in ui.html's HAT table. No halo:
+    // that rect was checked here for a long while after the page stopped
+    // drawing it, which is the drift assertMirrorsUi exists to prevent.
     chk(`${tag} brim`, 6 + DX, 14 + DY + bob, 44, 3, dx, dy);
     chk(`${tag} dome`, 12 + DX, 8 + DY + bob, 32, 6, dx, dy);
-    chk(`${tag} glow`, 21 + DX, 7 + DY + bob, 14, 9, dx, dy);
     chk(`${tag} lampbx`, 23 + DX, 9 + DY + bob, 10, 5, dx, dy);
     chk(`${tag} lamp`, 25 + DX, 10 + DY + bob, 6, 3, dx, dy);
     chk(`${tag} eye`, 12 + OX + 1, 24 + OY + bob, 3, 6, dx, dy);
