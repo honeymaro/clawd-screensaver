@@ -300,6 +300,7 @@
   const DENIM   = '#4A5C74', DENIM_D = '#36455A';
   const WOOL    = '#8A4A5B', WOOL_D = '#6B3745';
   const TIE     = '#C0483F', TIE_D = '#8E332C', KNOT = '#E8E2D4';
+  const CAP     = '#8A5A2B', CAP_D = '#6A4420', CAP_L = '#A87340';
 
   // Each takes the bob and the same `dx` Clawd is standing at, and folds both
   // into a local `r` so the coordinates below stay readable as the flat numbers
@@ -376,6 +377,20 @@
       r(38, 32, 6, 3, KNOT);                 // the disc, sunk into the band
       r(19, 34, 4, 2, TIE);                  // tails, short and falling away
       r(16, 36, 4, 2, TIE_D);                // meeting the first, not near it
+    },
+    // A hunting cap with the flaps down. It is as close to a dog's ears as Clawd
+    // gets without stopping being Clawd, and the crown is deliberately low: that
+    // scene lifts him ten units out of the grass, and a tall one would take the
+    // counter's two units of clearance with it.
+    hunter: (bob, dx) => {
+      const r = (x, y, w, h, c) => rect(x + dx, y + bob, w, h, c);
+      r(25, 29, 32, 7, CAP);
+      r(25, 34, 32, 2, CAP_L);
+      // The flaps hang past his head on both sides and well below it. A brim
+      // all the way round instead was a plank laid across him, and the flaps
+      // are the only part that says hunting rather than hat.
+      r(19, 34, 6, 12, CAP_D);
+      r(57, 34, 6, 12, CAP_D);
     },
   };
 
@@ -1302,6 +1317,223 @@
     };
   }
 
+  function makeDuckHunt() {
+    const TREE    = '#1A2A1C';
+    const GRASS   = '#24401F';
+    const GRASS_L = '#33552B';
+    const TUFT    = '#A8D84A';
+    const DUCK    = '#2A2E3A';
+    const WING    = '#4A5265';
+    const BELLY   = '#C9CEDA';
+    const BEAK    = '#E8A23A';
+    const FLASH   = '#F4F7FF';
+    const AIM     = '#8E9BAA', AIM_L = '#DDE5EF';
+
+    // Nobody is holding a gun, which is the game: the player is off the screen
+    // with the Zapper and the only three things on it are a duck, a dog and the
+    // sight the player is looking down. Clawd is the dog. What says a shot
+    // happened is what said it in 1985, the duck going white for a frame and
+    // then dropping like a stone.
+    //
+    // One flight every 3.6 s, and the whole beat inside it: flush, climb, hit,
+    // fall, retrieve. A single duck at a time, like Game A.
+    const CYCLE = 3600;
+    const CLIMB = [0.06, 0.52];        // out of the grass to the top of the climb
+    const STUN = 0.58, LANDED = 0.74;  // frozen until STUN, in the grass by LANDED
+    const FETCH = 0.76;                // Clawd comes up with it
+
+    // The grass hides the launch and the landing, so no part of a flight is ever
+    // visible at the moment its phase wraps. Both bands reach the bottom of the
+    // stage, which is what lets them run past its sides.
+    //
+    // The turf is low and Clawd stands well to the right, because he is 36 units
+    // wide on a 112 unit stage and this is the one scene whose subject is the
+    // empty part. Chest deep and off to one side, the sky is 28 units tall and
+    // the duck has somewhere to be.
+    const TREES = 52, TURF = 60;
+    const SHIFT = 26;
+    const D_X0 = 6, D_X1 = 42, D_LOW = 63, D_TOP = 30;
+
+    // Where the sight waits, in the middle of the empty half. It wanders a unit
+    // on two different clocks, which is enough to stop it looking nailed on.
+    const REST_X = 26, REST_Y = 40;
+    const SEEN = 0.16, LOCK = 0.38;    // notices the bird, then has it
+    const HOME = [0.56, 0.72];         // and swings back after the shot
+
+    let prevP = 0, cheerAt = -1e9;
+
+    const at = now => (now / CYCLE) % 1;
+    const span = (p, a, b) => Math.max(0, Math.min(1, (p - a) / (b - a)));
+
+    // Three wing positions off the clock, and a two unit waver: a duck that
+    // climbs in a clean line is a paper aeroplane.
+    const waver = now => (Math.floor(now / 190) % 3 - 1) * 2;
+
+    // Clipped at the turf line rather than drawn through it. The grass covers
+    // that part anyway, so this changes nothing anyone sees; what it buys is a
+    // duck big enough to read. Thirteen wide and fourteen tall wing tip to wing
+    // tip, and one waiting under the turf hangs off the bottom of the stage.
+    const bit = (x, y, w, h, c) => {
+      const cut = Math.min(h, TURF - y);
+      if (cut > 0) rect(x, y, w, cut, c);
+    };
+
+    // `y` is the top of the head.
+    function drawDuck(x, y, wing, tint) {
+      const body = tint || DUCK;
+      bit(x + 1, y + 4, 12, 3, body);
+      bit(x + 2, y + 3, 9, 5, body);
+      bit(x + 9, y, 4, 4, body);               // head
+      bit(x + 12, y + 1, 2, 2, tint || BEAK);
+      bit(x + 3, y + 6, 6, 1, tint || BELLY);
+      if (wing === 0) bit(x + 4, y - 3, 5, 4, tint || WING);
+      else if (wing === 1) bit(x + 4, y + 2, 6, 3, tint || WING);
+      else bit(x + 5, y + 7, 5, 4, tint || WING);
+    }
+
+    // Where the duck is at a point along the climb, as the centre of it rather
+    // than a corner, because that is what the sight has to agree with.
+    // Centred on the body rather than on the bounding box, which is a head and
+    // a wing higher than where anyone would aim.
+    const flight = (c, now) => ({
+      x: snap(D_X0 + (D_X1 - D_X0) * c) + 7.5,
+      y: snap(D_LOW - (D_LOW - D_TOP) * c * (2 - c)) + waver(now) + 5.5,
+    });
+
+    // Still no gun, but somebody is holding one, and this is the only thing on
+    // the stage that says so.
+    //
+    // It does not follow the bird. It sits where it was left, in the middle of
+    // the empty half, and stays there through the flush, because a person does
+    // not have the duck until they have seen it. Then it goes and gets it: fast
+    // out of the gate, slow into the target, on it for a beat, fire. A sight
+    // welded to the duck from the moment it clears the grass is a turret, and
+    // the shot never becomes possible because it was always possible.
+    //
+    // A ring seven across with a bright pip at its centre. The ring says where
+    // the attention is; the pip is the pixel it is actually on, and without it a
+    // ring is a region rather than a point. A circle on a grid this coarse has
+    // to be spelled out, so these are the runs of a seven by seven one as
+    // offsets from its top left corner, which is shorter than the arithmetic
+    // and rounder than what the arithmetic gives.
+    const RING = [
+      [2, 0, 3, 1], [2, 6, 3, 1],   // caps
+      [1, 1, 1, 1], [5, 1, 1, 1],   // shoulders
+      [1, 5, 1, 1], [5, 5, 1, 1],
+      [0, 2, 1, 3], [6, 2, 1, 3],   // sides
+    ];
+    // Fast then slow, which is what a hand does and a motor does not.
+    const flick = t => 1 - Math.pow(1 - t, 3);
+    // Snapped, because a blend lands anywhere and the renderer wants halves.
+    const toward = (from, to, k) => snap(from + (to - from) * k);
+    // One colour throughout, including over the white of the hit: the ring going
+    // white too would lose it in the bird at the one instant it is the point.
+    function drawAim(cx, cy) {
+      for (const [dx, dy, w, h] of RING) bit(cx - 3.5 + dx, cy - 3.5 + dy, w, h, AIM);
+      bit(cx - 0.5, cy - 0.5, 1, 1, AIM_L);
+    }
+
+    return {
+      accent: TUFT,
+      celebrate(now) {
+        // He comes up with two of them, which is what the dog does when both
+        // ducks of a pair are hit.
+        cheerAt = now;
+        // Over Clawd rather than over the shot: this burst belongs to the
+        // handing over, and the shot happens well to the left of him.
+        spawn(SHIFT + 40, 38, 12, [BELLY, WING, TUFT], 20, 34);
+      },
+      // Feathers at the shot, which is an edge rather than a position.
+      step(now) {
+        const p = at(now);
+        if (prevP < CLIMB[1] && p >= CLIMB[1]) {
+          spawn(D_X1 + 5, 34, 8, [BELLY, WING, DUCK], 18, 30);
+        }
+        prevP = p;
+      },
+      draw(now, blinking) {
+        const p = at(now);
+
+        // Distant cover, drawn to the bottom so it qualifies as a backdrop and
+        // can overhang the sides. The humps go on top of it and stay inside.
+        rect(-4, TREES, W + 8, H - TREES + 4, TREE);
+        for (let x = 5; x < 100; x += 13) rect(x, TREES - 3, 9, 3, TREE);
+
+        // Clawd, chest deep and watching. Out of the grass to hand it over.
+        const fetch = span(p, FETCH, 1);
+        const lift = fetch < 0.25 ? fetch / 0.25
+                   : fetch > 0.8 ? (1 - fetch) / 0.2 : 1;
+        const bob = Math.round(8 - 10 * lift) + (lift ? 0 : Math.floor(now / 500) % 2);
+        drawClawd(bob, 0, blinking, HAT.hunter, { dx: SHIFT, standing: false });
+
+        // What he came up with. Two of them when the counter has just risen,
+        // which is the pose for a pair brought back together.
+        //
+        // Settled once, at the instant this retrieval opens, rather than tested
+        // afresh every frame. `cheerAt` is a wall clock and the pose is a fixed
+        // phase, so a window measured from one lands its edge in the middle of
+        // the other, and a duck appears or vanishes in his hands with nothing on
+        // screen to explain it. A rise that arrives after the window has opened
+        // waits for the next one, which is the right way round anyway: he has
+        // to go and get them.
+        if (lift > 0.5) {
+          const opened = Math.floor(now / CYCLE) * CYCLE + FETCH * CYCLE;
+          if (opened - cheerAt >= 0 && opened - cheerAt < CYCLE) {
+            drawDuck(52, 42 + bob, 1, null);
+            drawDuck(68, 42 + bob, 1, null);
+          } else {
+            drawDuck(60, 42 + bob, 1, null);
+          }
+        }
+
+        // The duck, in front of Clawd. Behind him it would vanish into his chest
+        // halfway up the climb; in front it simply passes close.
+        const climb = span(p, CLIMB[0], CLIMB[1]);
+        const hit = p >= CLIMB[1] && p < CLIMB[1] + 0.02;
+        if (p < CLIMB[1]) {
+          const bird = flight(climb, now);
+          drawDuck(bird.x - 7.5, bird.y - 5.5, Math.floor(now / 120) % 3, null);
+        } else if (p < LANDED) {
+          // Hit: white for a beat, then stunned, then straight down with the
+          // wing still up, which is the sprite everyone remembers.
+          const fall = span(p, STUN, LANDED);
+          drawDuck(D_X1, snap(D_TOP + (D_LOW - D_TOP) * fall * fall), 0,
+                   hit ? FLASH : null);
+        }
+
+        // The sight, over the duck and over Clawd both: it is on the glass, not
+        // in the field. Every position it takes is a blend between where it
+        // rests and where the bird is, so it remembers nothing between frames.
+        const rx = REST_X + (Math.floor(now / 1300) % 3 - 1);
+        const ry = REST_Y + (Math.floor(now / 900) % 3 - 1);
+        const shotX = D_X1 + 7.5, shotY = D_TOP + 5.5;
+        if (p < CLIMB[1]) {
+          const bird = flight(climb, now);
+          const k = flick(span(p, SEEN, LOCK));
+          drawAim(toward(rx, bird.x, k), toward(ry, bird.y, k));
+        } else if (hit) {
+          drawAim(shotX, shotY);
+        } else if (p >= HOME[0]) {
+          // Off the target and back to where it waits. Between the shot and
+          // this it is not drawn at all, which is the flinch.
+          const k = flick(span(p, HOME[0], HOME[1]));
+          drawAim(toward(shotX, rx, k), toward(shotY, ry, k));
+        }
+
+        // Turf last, over all of it: it is what hides the launch, the landing
+        // and his legs. Lit edge first and then the body over it, both to the
+        // bottom, because a two unit strip on its own is not a backdrop.
+        rect(-4, TURF, W + 8, H - TURF + 4, GRASS_L);
+        rect(-4, TURF + 2, W + 8, H - TURF + 2, GRASS);
+        // Blades standing proud of it, in the one saturated colour here.
+        for (let x = 4; x < 106; x += 13) {
+          rect(x, TURF - 3, 1, 4, TUFT);
+          rect(x + 6, TURF - 2, 1, 3, GRASS_L);
+        }
+      },
+    };
+  }
+
   const SCENES = {
     mine: makeMine(),
     forge: makeForge(),
@@ -1311,6 +1543,7 @@
     belt: makeBelt(),
     uplink: makeUplink(),
     dojo: makeDojo(),
+    duckhunt: makeDuckHunt(),
   };
   const scene = SCENES[window.CLAWD_SCENE] || SCENES.mine;
 

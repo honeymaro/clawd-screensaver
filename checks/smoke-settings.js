@@ -21,7 +21,7 @@ const js = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'
 // against what a reader expects to see.
 const PERIODS = ['1d', 'wtd', 'mtd', '7d', '30d'];
 const SCENES = ['random', 'mine', 'forge', 'rack', 'dock', 'printer', 'belt',
-                'uplink', 'dojo'];
+                'uplink', 'dojo', 'duckhunt'];
 
 function el(tagName = 'DIV') {
   const node = {
@@ -153,7 +153,7 @@ for (const key of SCENES) {
   });
 }
 
-// Fourteen options do not fit the window, and the scene group is the half that
+// Fifteen options do not fit the window, and the scene group is the half that
 // starts below the fold. A stored scene nobody can see reads as a lost setting,
 // and what brings it into view is being focused: `focus()` scrolls to its own
 // element. So the assertion is about focus, which this stub can see, rather

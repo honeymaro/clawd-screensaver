@@ -81,7 +81,7 @@ pub fn run(current: Settings) -> wry::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Clawd Saver")
-        // Fourteen options no longer fit, so the page scrolls its own form and
+        // Fifteen options no longer fit, so the page scrolls its own form and
         // keeps Save and Cancel below it. Not made taller to suit: the window
         // cannot be resized, and one sized for the scene list would hang off the
         // bottom of a 768-line laptop screen, which is worse than scrolling.
